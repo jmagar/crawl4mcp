@@ -124,7 +124,6 @@ yarn-error.log*
 
 # Docker
 .dockerignore
-docker-compose.yml
 
 # OS generated files
 .DS_Store

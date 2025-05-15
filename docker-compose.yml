@@ -1,0 +1,81 @@
+services:
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.5
+    container_name: tei-embeddings
+    network_mode: host  # Use host networking
+    restart: unless-stopped
+    # Remove ports mapping - not needed with host network
+    volumes:
+      # Persist model weights
+      # - ./models:/data
+      # Alternative: use a Docker volume
+      - tei-models:/data
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    command: 
+      - --model-id=BAAI/bge-large-en-v1.5
+      - --port=8080  # Specify port since we're in host mode
+      # RTX 4070 optimized settings (12GB VRAM)
+      - --max-batch-tokens=24576        # Increased from 16384 for RTX 4070
+      - --max-batch-requests=48         # Can handle more concurrent requests
+      - --max-concurrent-requests=256   # Good for RTX 4070 capabilities
+      - --tokenization-workers=4        # Match your CPU cores
+      - --dtype=float16                 # Use FP16 for RTX 4070 tensor cores
+      - --pooling=mean                  # BGE-large uses mean pooling
+      - --max-client-batch-size=64      # Increased batch size
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  mcp-server:
+    container_name: mcp-crawl4ai
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-8051}:${PORT:-8051}"
+    environment:
+      - HOST=${HOST:-0.0.0.0}
+      - PORT=${PORT:-8051}
+      - TRANSPORT=${TRANSPORT:-sse}
+      
+      # Self-Hosted Embedding Server (Required)
+      - EMBEDDING_SERVER_URL=${EMBEDDING_SERVER_URL:-http://localhost:8080}
+      
+      # Qdrant Configuration (Required)
+      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-crawled_pages}
+      - VECTOR_DIM=${VECTOR_DIM:-1024}
+      
+      # OpenAI Configuration (Optional - for contextual summaries)
+      # Set OPENAI_API_KEY and SUMMARIZATION_MODEL_CHOICE in .env to enable summaries
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - SUMMARIZATION_MODEL_CHOICE=${SUMMARIZATION_MODEL_CHOICE:-}
+    # volumes:
+    #   - .:/app # Optional: Mount local code for development (see notes in Dockerfile)
+    networks:
+      - qdrant-network
+
+  qdrant:
+    container_name: qdrant
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "6333:6333"  # HTTP API
+      - "6334:6334"  # gRPC API
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - qdrant-network
+
+volumes:
+  qdrant_data:  # Persistent storage for Qdrant vectors
+
+networks:
+  qdrant-network:

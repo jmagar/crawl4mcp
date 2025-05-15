@@ -6,7 +6,7 @@
 
 A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com) and [Qdrant](https://qdrant.tech/) for providing AI agents and AI coding assistants with advanced web crawling and RAG capabilities.
 
-This server uses a self-hosted [BGE-large-en-v1.5](https://huggingface.co/BAAI/bge-large-en-v1.5) model for generating text embeddings, and Qdrant for vector storage and search.
+This server uses a self-hosted [BAAI/bge-large-en-v1.5](https://huggingface.co/BAAI/bge-large-en-v1.5) model for generating text embeddings, and Qdrant for vector storage and search.
 Optionally, it can use an OpenAI model (e.g., GPT-3.5-turbo, GPT-4o-mini) for generating contextual summaries to enhance RAG retrieval.
 
 ## Features
@@ -16,30 +16,29 @@ Optionally, it can use an OpenAI model (e.g., GPT-3.5-turbo, GPT-4o-mini) for ge
     *   Sitemaps (`sitemap.xml`)
     *   Text files listing URLs (`llms.txt`)
     *   Recursive crawling of websites within a specified depth
-*   **Self-Hosted Embeddings**: Generates embeddings using a local BAAI/bge-large-en-v1.5 model via a TEI server.
-*   **Vector Storage**: Stores crawled content and embeddings in a Qdrant database.
+*   **Self-Hosted Embeddings**: Generates embeddings using a local BAAI/bge-large-en-v1.5 model via the included TEI server.
+*   **Vector Storage**: Stores crawled content and embeddings in the included Qdrant database.
 *   **RAG Queries**: Performs semantic search over the stored content using RAG.
 *   **Contextual Summaries (Optional)**: If configured with an OpenAI API key and model, generates query-focused summaries of text chunks before embedding to improve retrieval relevance.
 *   **Source Filtering**: Allows RAG queries to be filtered by specific source domains.
 *   **MCP Integration**: Exposes crawling and RAG functionalities as MCP tools.
-*   **Easy Deployment**: Includes Dockerfile and docker-compose.yml for straightforward setup.
+*   **Easy Deployment**: Includes a `docker-compose.yml` that orchestrates the MCP server, Text Embeddings Inference (TEI) server, and Qdrant database.
 
 ## Setup and Installation
 
 ### Prerequisites
 
-*   Python 3.12+
+*   Python 3.12+ (only if planning to run the MCP server locally outside Docker)
 *   Docker and Docker Compose
-*   Access to a running Qdrant instance.
-*   A running Text Embeddings Inference (TEI) server with the BAAI/bge-large-en-v1.5 model.
-    *   Example TEI server endpoint: `http://your-tei-server-ip:port/embed`
+*   NVIDIA GPU with drivers installed (if using the TEI server with GPU acceleration as configured in `docker-compose.yml`)
 *   (Optional) OpenAI API Key and a chosen model if you want to enable contextual summaries.
+*   (Optional) `HUGGING_FACE_HUB_TOKEN` environment variable set in your system or `.env` file if the TEI server needs to download models from a private Hugging Face Hub repository.
 
 ### 1. Clone the Repository
 
    ```bash
-   git clone https://github.com/coleam00/mcp-crawl4ai-rag.git
-   cd mcp-crawl4ai-rag
+   git clone https://github.com/jmagar/crawl4mcp.git # Or your fork
+   cd crawl4mcp
    ```
 
 ### 2. Configure Environment Variables
@@ -50,22 +49,25 @@ Create a `.env` file in the project root by copying `.env.example`:
 cp .env.example .env
 ```
 
-Now, edit the `.env` file with your specific configurations:
+Now, edit the `.env` file. Many settings have sensible defaults for the Docker Compose setup:
 
 ```env
 # MCP Server Transport (sse or stdio)
 TRANSPORT=sse
 HOST=0.0.0.0
-PORT=8051 # Or any port you prefer for the MCP server
+PORT=8051 # Port for the MCP server
 
-# Self-Hosted Embedding Server
-EMBEDDING_SERVER_URL=http://10.1.0.7/embed # Replace with your TEI server URL
+# Self-Hosted Embedding Server (Defaults to the service in docker-compose.yml)
+# EMBEDDING_SERVER_URL=http://localhost:8080 # TEI runs on host network, port 8080
 
-# Qdrant Configuration
-QDRANT_URL=http://your-qdrant-ip:6333 # Replace with your Qdrant server URL
-QDRANT_API_KEY= # Optional: Your Qdrant Cloud API Key if using Qdrant Cloud
+# Qdrant Configuration (Defaults to the service in docker-compose.yml)
+# QDRANT_URL=http://qdrant:6333 # Service name for Qdrant within Docker network
+QDRANT_API_KEY= # Optional: Your Qdrant API Key if using an external Qdrant Cloud instance
 QDRANT_COLLECTION=crawled_pages # Or your preferred collection name
-VECTOR_DIM=1024 # Dimension for BGE-large-en-v1.5 embeddings
+VECTOR_DIM=1024 # Dimension for BAAI/bge-large-en-v1.5 embeddings
+
+# Hugging Face Hub Token (if your TEI model needs it)
+# HUGGING_FACE_HUB_TOKEN=your_hf_token_here
 
 # --- Optional: For contextual summaries using an OpenAI model ---
 OPENAI_API_KEY= # Your OpenAI API Key (if using contextual summaries)
@@ -74,26 +76,36 @@ SUMMARIZATION_MODEL_CHOICE=gpt-3.5-turbo # Or gpt-4o-mini, etc. (if using contex
 
 **Important Notes:**
 
-*   If `OPENAI_API_KEY` or `SUMMARIZATION_MODEL_CHOICE` are not set, contextual summaries will be disabled, and the server will only embed the raw text chunks.
+*   The `docker-compose.yml` sets default values for `EMBEDDING_SERVER_URL` (to `http://localhost:8080`) and `QDRANT_URL` (to `http://qdrant:6333`) if they are not provided in the `.env` file. These defaults are suitable for the included services.
+*   If `OPENAI_API_KEY` or `SUMMARIZATION_MODEL_CHOICE` are not set, contextual summaries will be disabled.
 *   Ensure `VECTOR_DIM` is set to `1024` for `BAAI/bge-large-en-v1.5`.
+*   If your `BAAI/bge-large-en-v1.5` model is private or requires authentication to download, provide your `HUGGING_FACE_HUB_TOKEN` in the `.env` file.
 
 ### 3. Build and Run with Docker Compose
 
-This is the recommended way to run the server.
+This is the recommended way to run the entire stack (MCP Server, TEI Embeddings Server, Qdrant).
 
 ```bash
-docker compose up --build -d
+docker-compose up --build -d
 ```
 
 This command will:
 
 *   Build the Docker image for the MCP server.
-*   Start the MCP server container.
-*   The server will be accessible based on your `HOST` and `PORT` configuration (e.g., `http://localhost:8051` if `PORT=8051`).
+*   Pull images for TEI and Qdrant if not already present.
+*   Start all three services.
+*   The MCP server will be accessible based on your `HOST` and `PORT` configuration (e.g., `http://localhost:8051` if `PORT=8051`).
+*   Qdrant data will be persisted in a Docker volume named `qdrant_data`.
+*   TEI model weights will be persisted to a local `./models` directory.
 
-### 4. (Alternative) Local Python Environment Setup
+To stop the services:
+```bash
+docker-compose down
+```
 
-If you prefer not to use Docker for the MCP server (Qdrant and TEI server would still ideally be separate):
+### 4. (Alternative) Local Python Environment Setup for MCP Server
+
+If you prefer to run only the MCP server locally (e.g., for development) and connect to separately managed TEI and Qdrant instances:
 
 ```bash
 # Create and activate a virtual environment (recommended)
@@ -106,7 +118,8 @@ uv pip install -e ".[openai]" # or just `uv pip install -e .` if not using summa
 # Run playwright browser setup for Crawl4AI
 crawl4ai-setup
 
-# Run the MCP server
+# Ensure your .env file points to your externally running TEI and Qdrant instances.
+# Then run the MCP server:
 python src/crawl4ai_mcp.py
 ```
 
