@@ -4,225 +4,138 @@
   <em>Web Crawling and RAG Capabilities for AI Agents and AI Coding Assistants</em>
 </p>
 
-A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com) and [Supabase](https://supabase.com/) for providing AI agents and AI coding assistants with advanced web crawling and RAG capabilities.
+A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com) and [Qdrant](https://qdrant.tech/) for providing AI agents and AI coding assistants with advanced web crawling and RAG capabilities.
 
-With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG.
-
-The primary goal is to bring this MCP server into [Archon](https://github.com/coleam00/Archon) as I evolve it to be more of a knowledge engine for AI coding assistants to build AI agents. This first version of the Crawl4AI/RAG MCP server will be improved upon greatly soon, especially making it more configurable so you can use different embedding models and run everything locally with Ollama.
-
-## Overview
-
-This MCP server provides tools that enable AI agents to crawl websites, store content in a vector database (Supabase), and perform RAG over the crawled content. It follows the best practices for building MCP servers based on the [Mem0 MCP server template](https://github.com/coleam00/mcp-mem0/) I provided on my channel previously.
-
-## Vision
-
-The Crawl4AI RAG MCP server is just the beginning. Here's where we're headed:
-
-1. **Integration with Archon**: Building this system directly into [Archon](https://github.com/coleam00/Archon) to create a comprehensive knowledge engine for AI coding assistants to build better AI agents.
-
-2. **Multiple Embedding Models**: Expanding beyond OpenAI to support a variety of embedding models, including the ability to run everything locally with Ollama for complete control and privacy.
-
-3. **Advanced RAG Strategies**: Implementing sophisticated retrieval techniques like contextual retrieval, late chunking, and others to move beyond basic "naive lookups" and significantly enhance the power and precision of the RAG system, especially as it integrates with Archon.
-
-4. **Enhanced Chunking Strategy**: Implementing a Context 7-inspired chunking approach that focuses on examples and creates distinct, semantically meaningful sections for each chunk, improving retrieval precision.
-
-5. **Performance Optimization**: Increasing crawling and indexing speed to make it more realistic to "quickly" index new documentation to then leverage it within the same prompt in an AI coding assistant.
+This server uses a self-hosted [BGE-large-en-v1.5](https://huggingface.co/BAAI/bge-large-en-v1.5) model for generating text embeddings, and Qdrant for vector storage and search.
+Optionally, it can use an OpenAI model (e.g., GPT-3.5-turbo, GPT-4o-mini) for generating contextual summaries to enhance RAG retrieval.
 
 ## Features
 
-- **Smart URL Detection**: Automatically detects and handles different URL types (regular webpages, sitemaps, text files)
-- **Recursive Crawling**: Follows internal links to discover content
-- **Parallel Processing**: Efficiently crawls multiple pages simultaneously
-- **Content Chunking**: Intelligently splits content by headers and size for better processing
-- **Vector Search**: Performs RAG over crawled content, optionally filtering by data source for precision
-- **Source Retrieval**: Retrieve sources available for filtering to guide the RAG process
+*   **Smart Web Crawling**: Utilizes Crawl4AI to intelligently crawl various web content types:
+    *   Single web pages
+    *   Sitemaps (`sitemap.xml`)
+    *   Text files listing URLs (`llms.txt`)
+    *   Recursive crawling of websites within a specified depth
+*   **Self-Hosted Embeddings**: Generates embeddings using a local BAAI/bge-large-en-v1.5 model via a TEI server.
+*   **Vector Storage**: Stores crawled content and embeddings in a Qdrant database.
+*   **RAG Queries**: Performs semantic search over the stored content using RAG.
+*   **Contextual Summaries (Optional)**: If configured with an OpenAI API key and model, generates query-focused summaries of text chunks before embedding to improve retrieval relevance.
+*   **Source Filtering**: Allows RAG queries to be filtered by specific source domains.
+*   **MCP Integration**: Exposes crawling and RAG functionalities as MCP tools.
+*   **Easy Deployment**: Includes Dockerfile and docker-compose.yml for straightforward setup.
 
-## Tools
+## Setup and Installation
 
-The server provides four essential web crawling and search tools:
+### Prerequisites
 
-1. **`crawl_single_page`**: Quickly crawl a single web page and store its content in the vector database
-2. **`smart_crawl_url`**: Intelligently crawl a full website based on the type of URL provided (sitemap, llms-full.txt, or a regular webpage that needs to be crawled recursively)
-3. **`get_available_sources`**: Get a list of all available sources (domains) in the database
-4. **`perform_rag_query`**: Search for relevant content using semantic search with optional source filtering
+*   Python 3.12+
+*   Docker and Docker Compose
+*   Access to a running Qdrant instance.
+*   A running Text Embeddings Inference (TEI) server with the BAAI/bge-large-en-v1.5 model.
+    *   Example TEI server endpoint: `http://your-tei-server-ip:port/embed`
+*   (Optional) OpenAI API Key and a chosen model if you want to enable contextual summaries.
 
-## Prerequisites
+### 1. Clone the Repository
 
-- [Docker/Docker Desktop](https://www.docker.com/products/docker-desktop/) if running the MCP server as a container (recommended)
-- [Python 3.12+](https://www.python.org/downloads/) if running the MCP server directly through uv
-- [Supabase](https://supabase.com/) (database for RAG)
-- [OpenAI API key](https://platform.openai.com/api-keys) (for generating embeddings)
-
-## Installation
-
-### Using Docker (Recommended)
-
-1. Clone this repository:
    ```bash
    git clone https://github.com/coleam00/mcp-crawl4ai-rag.git
    cd mcp-crawl4ai-rag
    ```
 
-2. Build the Docker image:
+### 2. Configure Environment Variables
+
+Create a `.env` file in the project root by copying `.env.example`:
+
    ```bash
-   docker build -t mcp/crawl4ai-rag --build-arg PORT=8051 .
-   ```
-
-3. Create a `.env` file based on the configuration section below
-
-### Using uv directly (no Docker)
-
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/coleam00/mcp-crawl4ai-rag.git
-   cd mcp-crawl4ai-rag
-   ```
-
-2. Install uv if you don't have it:
-   ```bash
-   pip install uv
-   ```
-
-3. Create and activate a virtual environment:
-   ```bash
-   uv venv
-   .venv\Scripts\activate
-   # on Mac/Linux: source .venv/bin/activate
-   ```
-
-4. Install dependencies:
-   ```bash
-   uv pip install -e .
-   crawl4ai-setup
-   ```
-
-5. Create a `.env` file based on the configuration section below
-
-## Database Setup
-
-Before running the server, you need to set up the database with the pgvector extension:
-
-1. Go to the SQL Editor in your Supabase dashboard (create a new project first if necessary)
-
-2. Create a new query and paste the contents of `crawled_pages.sql`
-
-3. Run the query to create the necessary tables and functions
-
-## Configuration
-
-Create a `.env` file in the project root with the following variables:
-
+cp .env.example .env
 ```
-# MCP Server Configuration
-HOST=0.0.0.0
-PORT=8051
+
+Now, edit the `.env` file with your specific configurations:
+
+```env
+# MCP Server Transport (sse or stdio)
 TRANSPORT=sse
+HOST=0.0.0.0
+PORT=8051 # Or any port you prefer for the MCP server
 
-# OpenAI API Configuration
-OPENAI_API_KEY=your_openai_api_key
+# Self-Hosted Embedding Server
+EMBEDDING_SERVER_URL=http://10.1.0.7/embed # Replace with your TEI server URL
 
-# Supabase Configuration
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_SERVICE_KEY=your_supabase_service_key
+# Qdrant Configuration
+QDRANT_URL=http://your-qdrant-ip:6333 # Replace with your Qdrant server URL
+QDRANT_API_KEY= # Optional: Your Qdrant Cloud API Key if using Qdrant Cloud
+QDRANT_COLLECTION=crawled_pages # Or your preferred collection name
+VECTOR_DIM=1024 # Dimension for BGE-large-en-v1.5 embeddings
+
+# --- Optional: For contextual summaries using an OpenAI model ---
+OPENAI_API_KEY= # Your OpenAI API Key (if using contextual summaries)
+SUMMARIZATION_MODEL_CHOICE=gpt-3.5-turbo # Or gpt-4o-mini, etc. (if using contextual summaries)
 ```
 
-## Running the Server
+**Important Notes:**
 
-### Using Docker
+*   If `OPENAI_API_KEY` or `SUMMARIZATION_MODEL_CHOICE` are not set, contextual summaries will be disabled, and the server will only embed the raw text chunks.
+*   Ensure `VECTOR_DIM` is set to `1024` for `BAAI/bge-large-en-v1.5`.
+
+### 3. Build and Run with Docker Compose
+
+This is the recommended way to run the server.
 
 ```bash
-docker run --env-file .env -p 8051:8051 mcp/crawl4ai-rag
+docker compose up --build -d
 ```
 
-### Using Python
+This command will:
+
+*   Build the Docker image for the MCP server.
+*   Start the MCP server container.
+*   The server will be accessible based on your `HOST` and `PORT` configuration (e.g., `http://localhost:8051` if `PORT=8051`).
+
+### 4. (Alternative) Local Python Environment Setup
+
+If you prefer not to use Docker for the MCP server (Qdrant and TEI server would still ideally be separate):
 
 ```bash
-uv run src/crawl4ai_mcp.py
+# Create and activate a virtual environment (recommended)
+uv venv
+source .venv/bin/activate
+
+# Install dependencies (including optional openai if you plan to use it)
+uv pip install -e ".[openai]" # or just `uv pip install -e .` if not using summaries
+
+# Run playwright browser setup for Crawl4AI
+crawl4ai-setup
+
+# Run the MCP server
+python src/crawl4ai_mcp.py
 ```
 
-The server will start and listen on the configured host and port.
+## MCP Tools
 
-## Integration with MCP Clients
+Once the server is running, it provides the following MCP tools:
 
-### SSE Configuration
+*   `mcp_crawl4ai_crawl_single_page(url: str)`: Crawls a single web page and stores its content.
+*   `mcp_crawl4ai_smart_crawl_url(url: str, max_depth: Optional[int] = 3, max_concurrent: Optional[int] = 10, chunk_size: Optional[int] = 5000)`: Intelligently crawls a URL (detects sitemaps, text files, or regular webpages for recursive crawling) and stores the content.
+*   `mcp_crawl4ai_perform_rag_query(query: str, source: Optional[str] = None, match_count: Optional[int] = 5)`: Performs a RAG query on the stored content.
+*   `mcp_crawl4ai_get_available_sources()`: Retrieves a list of unique source domains that have been crawled.
 
-Once you have the server running with SSE transport, you can connect to it using this configuration:
+## Development
 
-```json
-{
-  "mcpServers": {
-    "crawl4ai-rag": {
-      "transport": "sse",
-      "url": "http://localhost:8051/sse"
-    }
-  }
-}
+Ensure you have `uv` installed for managing the Python environment.
+
+```bash
+# Install dependencies
+uv pip install -e ".[openai]"
+
+# To run linters/formatters (example using ruff)
+# uv run ruff format .
+# uv run ruff check .
 ```
 
-> **Note for Windsurf users**: Use `serverUrl` instead of `url` in your configuration:
-> ```json
-> {
->   "mcpServers": {
->     "crawl4ai-rag": {
->       "transport": "sse",
->       "serverUrl": "http://localhost:8051/sse"
->     }
->   }
-> }
-> ```
->
-> **Note for Docker users**: Use `host.docker.internal` instead of `localhost` if your client is running in a different container. This will apply if you are using this MCP server within n8n!
+## Memory Bank (For Cline - AI Assistant)
 
-### Stdio Configuration
+This project uses a concept called a "Memory Bank" to help AI assistants like Cline maintain context across sessions. If you are Cline or a similar AI, please refer to the `cline_docs/` directory and the custom instructions provided at the start of your interaction.
 
-Add this server to your MCP configuration for Claude Desktop, Windsurf, or any other MCP client:
+## Contributing
 
-```json
-{
-  "mcpServers": {
-    "crawl4ai-rag": {
-      "command": "python",
-      "args": ["path/to/crawl4ai-mcp/src/crawl4ai_mcp.py"],
-      "env": {
-        "TRANSPORT": "stdio",
-        "OPENAI_API_KEY": "your_openai_api_key",
-        "SUPABASE_URL": "your_supabase_url",
-        "SUPABASE_SERVICE_KEY": "your_supabase_service_key"
-      }
-    }
-  }
-}
-```
-
-### Docker with Stdio Configuration
-
-```json
-{
-  "mcpServers": {
-    "crawl4ai-rag": {
-      "command": "docker",
-      "args": ["run", "--rm", "-i", 
-               "-e", "TRANSPORT", 
-               "-e", "OPENAI_API_KEY", 
-               "-e", "SUPABASE_URL", 
-               "-e", "SUPABASE_SERVICE_KEY", 
-               "mcp/crawl4ai"],
-      "env": {
-        "TRANSPORT": "stdio",
-        "OPENAI_API_KEY": "your_openai_api_key",
-        "SUPABASE_URL": "your_supabase_url",
-        "SUPABASE_SERVICE_KEY": "your_supabase_service_key"
-      }
-    }
-  }
-}
-```
-
-## Building Your Own Server
-
-This implementation provides a foundation for building more complex MCP servers with web crawling capabilities. To build your own:
-
-1. Add your own tools by creating methods with the `@mcp.tool()` decorator
-2. Create your own lifespan function to add your own dependencies
-3. Modify the `utils.py` file for any helper functions you need
-4. Extend the crawling capabilities by adding more specialized crawlers
+Contributions are welcome! Please feel free to open an issue or submit a pull request.

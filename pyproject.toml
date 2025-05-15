@@ -7,7 +7,10 @@ requires-python = ">=3.12"
 dependencies = [
     "crawl4ai==0.6.2",
     "mcp==1.7.1",
-    "supabase==2.15.1",
-    "openai==1.71.0",
+    "qdrant-client==1.14.2",
+    "requests==2.32.3",
     "dotenv==0.9.9"
 ]
+
+[project.optional-dependencies]
+openai = ["openai==1.71.0"]

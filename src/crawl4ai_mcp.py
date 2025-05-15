@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse, urldefrag
 from xml.etree import ElementTree
 from dotenv import load_dotenv
-from supabase import Client
+from qdrant_client import QdrantClient
 from pathlib import Path
 import requests
 import asyncio
@@ -21,7 +21,13 @@ import os
 import re
 
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, MemoryAdaptiveDispatcher
-from utils import get_supabase_client, add_documents_to_supabase, search_documents
+from utils import (
+    get_qdrant_client, 
+    ensure_qdrant_collection_async as async_ensure_collection_exists,
+    store_embeddings,
+    query_qdrant,
+    get_available_sources as get_available_sources_async
+)
 
 # Load environment variables from the project root .env file
 project_root = Path(__file__).resolve().parent.parent
@@ -35,7 +41,8 @@ load_dotenv(dotenv_path, override=True)
 class Crawl4AIContext:
     """Context for the Crawl4AI MCP server."""
     crawler: AsyncWebCrawler
-    supabase_client: Client
+    qdrant_client: QdrantClient
+    collection_name: str
     
 @asynccontextmanager
 async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
@@ -46,7 +53,7 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
         server: The FastMCP server instance
         
     Yields:
-        Crawl4AIContext: The context containing the Crawl4AI crawler and Supabase client
+        Crawl4AIContext: The context containing the Crawl4AI crawler and Qdrant client
     """
     # Create browser configuration
     browser_config = BrowserConfig(
@@ -58,13 +65,19 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
     crawler = AsyncWebCrawler(config=browser_config)
     await crawler.__aenter__()
     
-    # Initialize Supabase client
-    supabase_client = get_supabase_client()
+    # Initialize Qdrant client
+    qdrant_client = get_qdrant_client()
+    collection_name = os.getenv("QDRANT_COLLECTION", "crawled_pages")
+    vector_dim = int(os.getenv("VECTOR_DIM", "1024")) # Default to 1024 if not set
+    
+    # Ensure collection exists
+    await async_ensure_collection_exists(qdrant_client, collection_name, vector_dim)
     
     try:
         yield Crawl4AIContext(
             crawler=crawler,
-            supabase_client=supabase_client
+            qdrant_client=qdrant_client,
+            collection_name=collection_name
         )
     finally:
         # Clean up the crawler
@@ -192,22 +205,23 @@ def extract_section_info(chunk: str) -> Dict[str, Any]:
 @mcp.tool()
 async def crawl_single_page(ctx: Context, url: str) -> str:
     """
-    Crawl a single web page and store its content in Supabase.
+    Crawl a single web page and store its content in Qdrant.
     
     This tool is ideal for quickly retrieving content from a specific URL without following links.
-    The content is stored in Supabase for later retrieval and querying.
+    The content is stored in Qdrant for later retrieval and querying.
     
     Args:
         ctx: The MCP server provided context
         url: URL of the web page to crawl
     
     Returns:
-        Summary of the crawling operation and storage in Supabase
+        Summary of the crawling operation and storage in Qdrant
     """
     try:
         # Get the crawler from the context
         crawler = ctx.request_context.lifespan_context.crawler
-        supabase_client = ctx.request_context.lifespan_context.supabase_client
+        qdrant_client = ctx.request_context.lifespan_context.qdrant_client
+        collection_name = ctx.request_context.lifespan_context.collection_name
         
         # Configure the crawl
         run_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, stream=False)
@@ -217,37 +231,32 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
         
         if result.success and result.markdown:
             # Chunk the content
-            chunks = smart_chunk_markdown(result.markdown)
+            chunks_text = smart_chunk_markdown(result.markdown, chunk_size=750)
             
-            # Prepare data for Supabase
-            urls = []
-            chunk_numbers = []
-            contents = []
-            metadatas = []
-            
-            for i, chunk in enumerate(chunks):
-                urls.append(url)
-                chunk_numbers.append(i)
-                contents.append(chunk)
-                
-                # Extract metadata
-                meta = extract_section_info(chunk)
-                meta["chunk_index"] = i
-                meta["url"] = url
-                meta["source"] = urlparse(url).netloc
-                meta["crawl_time"] = str(asyncio.current_task().get_coro().__name__)
-                metadatas.append(meta)
-            
-            # Create url_to_full_document mapping
-            url_to_full_document = {url: result.markdown}
-            
-            # Add to Supabase
-            add_documents_to_supabase(supabase_client, urls, chunk_numbers, contents, metadatas, url_to_full_document)
+            # Prepare chunk data for store_embeddings
+            chunks_data_for_qdrant = []
+            for i, chunk_content in enumerate(chunks_text):
+                meta = extract_section_info(chunk_content)
+                chunks_data_for_qdrant.append({
+                    "text": chunk_content,
+                    "headers": meta.get("headers", ""),
+                })
+
+            # Add to Qdrant using the new async store_embeddings
+            successful_chunks, failed_chunks = await store_embeddings(
+                client=qdrant_client,
+                collection_name=collection_name,
+                chunks=chunks_data_for_qdrant,
+                source_url=url,
+                crawl_type="single_page"
+            )
             
             return json.dumps({
                 "success": True,
                 "url": url,
-                "chunks_stored": len(chunks),
+                "chunks_processed": len(chunks_text),
+                "successful_chunks": successful_chunks,
+                "failed_chunks": failed_chunks,
                 "content_length": len(result.markdown),
                 "links_count": {
                     "internal": len(result.links.get("internal", [])),
@@ -270,29 +279,30 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
 @mcp.tool()
 async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concurrent: int = 10, chunk_size: int = 5000) -> str:
     """
-    Intelligently crawl a URL based on its type and store content in Supabase.
+    Intelligently crawl a URL based on its type and store content in Qdrant.
     
     This tool automatically detects the URL type and applies the appropriate crawling method:
     - For sitemaps: Extracts and crawls all URLs in parallel
     - For text files (llms.txt): Directly retrieves the content
     - For regular webpages: Recursively crawls internal links up to the specified depth
     
-    All crawled content is chunked and stored in Supabase for later retrieval and querying.
+    All crawled content is chunked and stored in Qdrant for later retrieval and querying.
     
     Args:
         ctx: The MCP server provided context
         url: URL to crawl (can be a regular webpage, sitemap.xml, or .txt file)
         max_depth: Maximum recursion depth for regular URLs (default: 3)
         max_concurrent: Maximum number of concurrent browser sessions (default: 10)
-        chunk_size: Maximum size of each content chunk in characters (default: 1000)
+        chunk_size: Maximum size of each content chunk in characters (default: 5000)
     
     Returns:
         JSON string with crawl summary and storage information
     """
     try:
-        # Get the crawler and Supabase client from the context
+        # Get the crawler and Qdrant client from the context
         crawler = ctx.request_context.lifespan_context.crawler
-        supabase_client = ctx.request_context.lifespan_context.supabase_client
+        qdrant_client = ctx.request_context.lifespan_context.qdrant_client
+        collection_name = ctx.request_context.lifespan_context.collection_name
         
         crawl_results = []
         crawl_type = "webpage"
@@ -325,51 +335,46 @@ async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concur
                 "error": "No content found"
             }, indent=2)
         
-        # Process results and store in Supabase
-        urls = []
-        chunk_numbers = []
-        contents = []
-        metadatas = []
-        chunk_count = 0
-        
-        for doc in crawl_results:
-            source_url = doc['url']
-            md = doc['markdown']
-            chunks = smart_chunk_markdown(md, chunk_size=chunk_size)
+        # Process results and store in Qdrant
+        all_chunks_data_for_qdrant = []
+        processed_urls = set()
+        total_successful_chunks = 0
+        total_failed_chunks = 0
+
+        for doc_data in crawl_results:
+            source_url = doc_data['url']
+            markdown_content = doc_data['markdown']
+            processed_urls.add(source_url)
             
-            for i, chunk in enumerate(chunks):
-                urls.append(source_url)
-                chunk_numbers.append(i)
-                contents.append(chunk)
-                
-                # Extract metadata
-                meta = extract_section_info(chunk)
-                meta["chunk_index"] = i
-                meta["url"] = source_url
-                meta["source"] = urlparse(source_url).netloc
-                meta["crawl_type"] = crawl_type
-                meta["crawl_time"] = str(asyncio.current_task().get_coro().__name__)
-                metadatas.append(meta)
-                
-                chunk_count += 1
-        
-        # Create url_to_full_document mapping
-        url_to_full_document = {}
-        for doc in crawl_results:
-            url_to_full_document[doc['url']] = doc['markdown']
-        
-        # Add to Supabase
-        # IMPORTANT: Adjust this batch size for more speed if you want! Just don't overwhelm your system or the embedding API ;)
-        batch_size = 20
-        add_documents_to_supabase(supabase_client, urls, chunk_numbers, contents, metadatas, url_to_full_document, batch_size=batch_size)
+            chunks_text = smart_chunk_markdown(markdown_content, chunk_size=750)
+            
+            current_page_chunks_data = []
+            for i, chunk_content in enumerate(chunks_text):
+                meta = extract_section_info(chunk_content)
+                current_page_chunks_data.append({
+                    "text": chunk_content,
+                    "headers": meta.get("headers", ""),
+                })
+            
+            # Store embeddings for the current page's chunks
+            successful_chunks, failed_chunks = await store_embeddings(
+                client=qdrant_client,
+                collection_name=collection_name,
+                chunks=current_page_chunks_data,
+                source_url=source_url,
+                crawl_type=crawl_type
+            )
+            total_successful_chunks += successful_chunks
+            total_failed_chunks += failed_chunks
         
         return json.dumps({
             "success": True,
             "url": url,
             "crawl_type": crawl_type,
-            "pages_crawled": len(crawl_results),
-            "chunks_stored": chunk_count,
-            "urls_crawled": [doc['url'] for doc in crawl_results][:5] + (["..."] if len(crawl_results) > 5 else [])
+            "pages_crawled": len(processed_urls),
+            "total_successful_chunks": total_successful_chunks,
+            "total_failed_chunks": total_failed_chunks,
+            "urls_crawled_sample": list(processed_urls)[:5] + (["..."] if len(processed_urls) > 5 else [])
         }, indent=2)
     except Exception as e:
         return json.dumps({
@@ -486,29 +491,11 @@ async def get_available_sources(ctx: Context) -> str:
         JSON string with the list of available sources
     """
     try:
-        # Get the Supabase client from the context
-        supabase_client = ctx.request_context.lifespan_context.supabase_client
+        # Get the Qdrant client from the context
+        qdrant_client = ctx.request_context.lifespan_context.qdrant_client
+        collection_name = ctx.request_context.lifespan_context.collection_name
         
-        # Use a direct query with the Supabase client
-        # This could be more efficient with a direct Postgres query but
-        # I don't want to require users to set a DB_URL environment variable as well
-        result = supabase_client.from_('crawled_pages')\
-            .select('metadata')\
-            .not_.is_('metadata->>source', 'null')\
-            .execute()
-            
-        # Use a set to efficiently track unique sources
-        unique_sources = set()
-        
-        # Extract the source values from the result using a set for uniqueness
-        if result.data:
-            for item in result.data:
-                source = item.get('metadata', {}).get('source')
-                if source:
-                    unique_sources.add(source)
-        
-        # Convert set to sorted list for consistent output
-        sources = sorted(list(unique_sources))
+        sources = await get_available_sources_async(qdrant_client, collection_name)
         
         return json.dumps({
             "success": True,
@@ -541,38 +528,26 @@ async def perform_rag_query(ctx: Context, query: str, source: str = None, match_
         JSON string with the search results
     """
     try:
-        # Get the Supabase client from the context
-        supabase_client = ctx.request_context.lifespan_context.supabase_client
+        # Get the Qdrant client from the context
+        qdrant_client = ctx.request_context.lifespan_context.qdrant_client
+        collection_name = ctx.request_context.lifespan_context.collection_name
         
-        # Prepare filter if source is provided and not empty
-        filter_metadata = None
-        if source and source.strip():
-            filter_metadata = {"source": source}
-        
-        # Perform the search
-        results = search_documents(
-            client=supabase_client,
-            query=query,
-            match_count=match_count,
-            filter_metadata=filter_metadata
+        # Perform the search using the new async query_qdrant
+        results = await query_qdrant(
+            client=qdrant_client,
+            collection_name=collection_name,
+            query_text=query,
+            source_filter=source if source and source.strip() else None,
+            match_count=match_count
         )
         
-        # Format the results
-        formatted_results = []
-        for result in results:
-            formatted_results.append({
-                "url": result.get("url"),
-                "content": result.get("content"),
-                "metadata": result.get("metadata"),
-                "similarity": result.get("similarity")
-            })
-        
+        # Results from query_qdrant are already well-formatted
         return json.dumps({
             "success": True,
             "query": query,
             "source_filter": source,
-            "results": formatted_results,
-            "count": len(formatted_results)
+            "results": results,
+            "count": len(results)
         }, indent=2)
     except Exception as e:
         return json.dumps({

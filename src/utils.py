@@ -3,293 +3,393 @@ Utility functions for the Crawl4AI MCP server.
 """
 import os
 import concurrent.futures
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 import json
-from supabase import create_client, Client
+import uuid
 from urllib.parse import urlparse
-import openai
+import requests
+from qdrant_client import QdrantClient
+from qdrant_client.http import models
+from qdrant_client.http.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+from qdrant_client.http.exceptions import ResponseHandlingException
 
-# Load OpenAI API key for embeddings
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Attempt to import OpenAI and initialize if API key is present (for summarization)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SUMMARIZATION_MODEL_CHOICE = os.getenv("SUMMARIZATION_MODEL_CHOICE")
+openai = None
+if OPENAI_API_KEY and SUMMARIZATION_MODEL_CHOICE:
+    try:
+        import openai as openai_client
+        openai_client.api_key = OPENAI_API_KEY
+        openai = openai_client
+    except ImportError:
+        print("OpenAI library not installed, but OPENAI_API_KEY and SUMMARIZATION_MODEL_CHOICE are set. Summarization will be disabled.")
 
-def get_supabase_client() -> Client:
+EMBEDDING_SERVER_URL = os.getenv("EMBEDDING_SERVER_URL")
+if not EMBEDDING_SERVER_URL:
+    raise ValueError("EMBEDDING_SERVER_URL must be set in the environment variables.")
+
+def get_qdrant_client() -> QdrantClient:
     """
-    Get a Supabase client with the URL and key from environment variables.
+    Get a Qdrant client with the URL and API key from environment variables.
     
     Returns:
-        Supabase client instance
+        Qdrant client instance
     """
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_KEY")
+    url = os.getenv("QDRANT_URL")
+    api_key = os.getenv("QDRANT_API_KEY")
     
-    if not url or not key:
-        raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in environment variables")
+    if not url:
+        raise ValueError("QDRANT_URL must be set in the environment variables.")
     
-    return create_client(url, key)
+    # Create client with or without API key, depending on what's provided
+    if api_key:
+        return QdrantClient(url=url, api_key=api_key)
+    else:
+        return QdrantClient(url=url)
 
-def create_embeddings_batch(texts: List[str]) -> List[List[float]]:
+async def get_embedding(text: str) -> List[float]:
     """
-    Create embeddings for multiple texts in a single API call.
-    
-    Args:
-        texts: List of texts to create embeddings for
-        
-    Returns:
-        List of embeddings (each embedding is a list of floats)
+    Get an embedding for a single text using the embedding server.
+    """
+    if not text.strip():
+        print("Attempted to get embedding for empty or whitespace text, returning empty list.")
+        return []
+    try:
+        response = requests.post(
+            EMBEDDING_SERVER_URL,
+            json={"inputs": [text]}
+        )
+        response.raise_for_status() # Raise an exception for HTTP errors
+        embeddings = response.json()
+        if isinstance(embeddings, list) and len(embeddings) > 0 and isinstance(embeddings[0], list):
+            return embeddings[0] # The server returns a list of embeddings, even for a single input
+        else:
+            print(f"Unexpected embedding format: {embeddings}")
+            return []
+    except requests.exceptions.RequestException as e:
+        print(f"Error getting embedding from {EMBEDDING_SERVER_URL}: {e}")
+        return []
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"Error decoding JSON response or unexpected structure from {EMBEDDING_SERVER_URL}: {e}")
+        return []
+
+def create_embeddings_batch(texts: List[str], server_batch_size: int = 1) -> List[List[float]]:
+    """
+    Create embeddings for a batch of texts using the self-hosted BGE-large model.
+    Sends texts to the embedding server in sub-batches of `server_batch_size`.
     """
     if not texts:
         return []
         
-    try:
-        response = openai.embeddings.create(
-            model="text-embedding-3-small", # Hardcoding embedding model for now, will change this later to be more dynamic
-            input=texts
-        )
-        return [item.embedding for item in response.data]
-    except Exception as e:
-        print(f"Error creating batch embeddings: {e}")
-        # Return empty embeddings if there's an error
-        return [[0.0] * 1536 for _ in range(len(texts))]
-
-def create_embedding(text: str) -> List[float]:
-    """
-    Create an embedding for a single text using OpenAI's API.
+    all_embeddings_results = []
     
-    Args:
-        text: Text to create an embedding for
-        
-    Returns:
-        List of floats representing the embedding
-    """
-    try:
-        embeddings = create_embeddings_batch([text])
-        return embeddings[0] if embeddings else [0.0] * 1536
-    except Exception as e:
-        print(f"Error creating embedding: {e}")
-        # Return empty embedding if there's an error
-        return [0.0] * 1536
+    # Filter out empty or whitespace-only strings to prevent errors with the embedding server
+    # and keep track of their original indices to reconstruct the final list accurately.
+    valid_texts_with_indices = []
+    for i, text in enumerate(texts):
+        if text and text.strip():
+            valid_texts_with_indices.append((i, text))
 
-def generate_contextual_embedding(full_document: str, chunk: str) -> Tuple[str, bool]:
-    """
-    Generate contextual information for a chunk within a document to improve retrieval.
-    
-    Args:
-        full_document: The complete document text
-        chunk: The specific chunk of text to generate context for
-        
-    Returns:
-        Tuple containing:
-        - The contextual text that situates the chunk within the document
-        - Boolean indicating if contextual embedding was performed
-    """
-    model_choice = os.getenv("MODEL_CHOICE")
-    
-    try:
-        # Create the prompt for generating contextual information
-        prompt = f"""<document> 
-{full_document[:25000]} 
-</document>
-Here is the chunk we want to situate within the whole document 
-<chunk> 
-{chunk}
-</chunk> 
-Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. Answer only with the succinct context and nothing else."""
+    if not valid_texts_with_indices:
+        return [[] for _ in texts] # All texts were invalid
 
-        # Call the OpenAI API to generate contextual information
-        response = openai.chat.completions.create(
-            model=model_choice,
+    original_indices = [item[0] for item in valid_texts_with_indices]
+    texts_to_process = [item[1] for item in valid_texts_with_indices]
+
+    for i in range(0, len(texts_to_process), server_batch_size):
+        batch_texts = texts_to_process[i:i + server_batch_size]
+        if not batch_texts:
+            continue
+        try:
+            response = requests.post(
+                EMBEDDING_SERVER_URL,
+                json={"inputs": batch_texts}
+            )
+            response.raise_for_status()
+            batch_embeddings = response.json()
+            # Ensure the response is a list of lists (embeddings)
+            if isinstance(batch_embeddings, list) and all(isinstance(emb, list) for emb in batch_embeddings):
+                all_embeddings_results.extend(batch_embeddings)
+            else:
+                print(f"Unexpected embedding format in batch response: {batch_embeddings}")
+                vector_dim_for_fallback = int(os.getenv("VECTOR_DIM", "1024")) # Use VECTOR_DIM, default 1024
+                all_embeddings_results.extend([[0.0] * vector_dim_for_fallback for _ in batch_texts]) # Use correct dimension
+        except requests.exceptions.RequestException as e:
+            print(f"Error creating embeddings for a sub-batch from {EMBEDDING_SERVER_URL}: {e}")
+            vector_dim_for_fallback = int(os.getenv("VECTOR_DIM", "1024")) # Use VECTOR_DIM, default 1024
+            all_embeddings_results.extend([[0.0] * vector_dim_for_fallback for _ in batch_texts]) # Use correct dimension
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Error decoding JSON response or unexpected structure for a sub-batch from {EMBEDDING_SERVER_URL}: {e}")
+            vector_dim_for_fallback = int(os.getenv("VECTOR_DIM", "1024")) # Use VECTOR_DIM, default 1024
+            all_embeddings_results.extend([[0.0] * vector_dim_for_fallback for _ in batch_texts]) # Use correct dimension
+
+    # Reconstruct the full list, inserting empty embeddings for original empty/failed strings
+    final_embeddings = [[] for _ in texts] # Initialize with empty lists
+    for i, original_idx in enumerate(original_indices):
+        if i < len(all_embeddings_results):
+            final_embeddings[original_idx] = all_embeddings_results[i]
+        else:
+            # This case should ideally not be hit if logic is correct, but as a safeguard:
+            print(f"Mismatch between processed embeddings and original texts. Index {original_idx} out of bounds.")
+
+    return final_embeddings
+
+async def generate_contextual_embedding(text_chunk: str, source_url: str, query: str) -> str:
+    """
+    Generate a contextual embedding for a text chunk using the embedding server.
+    """
+    if not openai or not SUMMARIZATION_MODEL_CHOICE:
+        print("OpenAI client not available or SUMMARIZATION_MODEL_CHOICE not set. Skipping contextual summary.")
+        return text_chunk # Return original text if summarization is not configured
+
+    prompt = (
+        f"Given the following text chunk from {source_url} and the user query \"{query}\", "
+        f"provide a concise summary that helps determine if this chunk is relevant to the query. "
+        f"Focus on keywords and entities related to the query. If the chunk is very short or clearly irrelevant, "
+        f"you can indicate that. Text chunk:\n\n{text_chunk}"
+    )
+    try:
+        completion = await openai.chat.completions.create(
+            model=SUMMARIZATION_MODEL_CHOICE,
             messages=[
-                {"role": "system", "content": "You are a helpful assistant that provides concise contextual information."},
+                {"role": "system", "content": "You are an expert at creating concise, query-focused summaries for RAG retrieval."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3,
-            max_tokens=200
+            max_tokens=150,
+            temperature=0.2
         )
-        
-        # Extract the generated context
-        context = response.choices[0].message.content.strip()
-        
-        # Combine the context with the original chunk
-        contextual_text = f"{context}\n---\n{chunk}"
-        
-        return contextual_text, True
-    
+        summary = completion.choices[0].message.content.strip()
+        # Combine summary with original text for better retrieval context
+        return f"Contextual Summary (Query: {query}): {summary}\n---\nOriginal Text: {text_chunk}"
     except Exception as e:
-        print(f"Error generating contextual embedding: {e}. Using original chunk instead.")
-        return chunk, False
+        print(f"Error generating contextual summary with {SUMMARIZATION_MODEL_CHOICE}: {e}")
+        return text_chunk # Fallback to original text on error
 
-def process_chunk_with_context(args):
+async def ensure_qdrant_collection_async(client: QdrantClient, collection_name: str, vector_dim: int):
     """
-    Process a single chunk with contextual embedding.
-    This function is designed to be used with concurrent.futures.
-    
-    Args:
-        args: Tuple containing (url, content, full_document)
-        
-    Returns:
-        Tuple containing:
-        - The contextual text that situates the chunk within the document
-        - Boolean indicating if contextual embedding was performed
+    Ensure that the specified collection exists in Qdrant.
+    This is an asynchronous version.
     """
-    url, content, full_document = args
-    return generate_contextual_embedding(full_document, content)
-
-def add_documents_to_supabase(
-    client: Client, 
-    urls: List[str], 
-    chunk_numbers: List[int],
-    contents: List[str], 
-    metadatas: List[Dict[str, Any]],
-    url_to_full_document: Dict[str, str],
-    batch_size: int = 20
-) -> None:
-    """
-    Add documents to the Supabase crawled_pages table in batches.
-    Deletes existing records with the same URLs before inserting to prevent duplicates.
-    
-    Args:
-        client: Supabase client
-        urls: List of URLs
-        chunk_numbers: List of chunk numbers
-        contents: List of document contents
-        metadatas: List of document metadata
-        url_to_full_document: Dictionary mapping URLs to their full document content
-        batch_size: Size of each batch for insertion
-    """
-    # Get unique URLs to delete existing records
-    unique_urls = list(set(urls))
-    
-    # Delete existing records for these URLs in a single operation
     try:
-        if unique_urls:
-            # Use the .in_() filter to delete all records with matching URLs
-            client.table("crawled_pages").delete().in_("url", unique_urls).execute()
+        # Try to get collection info. This might raise ResponseHandlingException if the
+        # client has trouble parsing the server's response (e.g., Pydantic validation error).
+        client.get_collection(collection_name=collection_name)
+        print(f"Collection '{collection_name}' already exists or client successfully parsed its details.")
+    except ResponseHandlingException as rHE:
+        # This is the Pydantic validation error.
+        # Assume the collection *exists*, but the client can't parse the response.
+        # DO NOT try to create it, as that would likely lead to a 409 Conflict.
+        print(f"Error parsing server response for collection '{collection_name}': {rHE}. Assuming collection exists but details are unparsable by this client version.")
+        # We pass here, effectively treating the collection as existing.
+        pass
     except Exception as e:
-        print(f"Batch delete failed: {e}. Trying one-by-one deletion as fallback.")
-        # Fallback: delete records one by one
-        for url in unique_urls:
-            try:
-                client.table("crawled_pages").delete().eq("url", url).execute()
-            except Exception as inner_e:
-                print(f"Error deleting record for URL {url}: {inner_e}")
-                # Continue with the next URL even if one fails
-    
-    # Check if MODEL_CHOICE is set for contextual embeddings
-    model_choice = os.getenv("MODEL_CHOICE")
-    use_contextual_embeddings = bool(model_choice)
-    
-    # Process in batches to avoid memory issues
-    for i in range(0, len(contents), batch_size):
-        batch_end = min(i + batch_size, len(contents))
-        
-        # Get batch slices
-        batch_urls = urls[i:batch_end]
-        batch_chunk_numbers = chunk_numbers[i:batch_end]
-        batch_contents = contents[i:batch_end]
-        batch_metadatas = metadatas[i:batch_end]
-        
-        # Apply contextual embedding to each chunk if MODEL_CHOICE is set
-        if use_contextual_embeddings:
-            # Prepare arguments for parallel processing
-            process_args = []
-            for j, content in enumerate(batch_contents):
-                url = batch_urls[j]
-                full_document = url_to_full_document.get(url, "")
-                process_args.append((url, content, full_document))
-            
-            # Process in parallel using ThreadPoolExecutor
-            contextual_contents = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                # Submit all tasks and collect results
-                future_to_idx = {executor.submit(process_chunk_with_context, arg): idx 
-                                for idx, arg in enumerate(process_args)}
-                
-                # Process results as they complete
-                for future in concurrent.futures.as_completed(future_to_idx):
-                    idx = future_to_idx[future]
-                    try:
-                        result, success = future.result()
-                        contextual_contents.append(result)
-                        if success:
-                            batch_metadatas[idx]["contextual_embedding"] = True
-                    except Exception as e:
-                        print(f"Error processing chunk {idx}: {e}")
-                        # Use original content as fallback
-                        contextual_contents.append(batch_contents[idx])
-            
-            # Sort results back into original order if needed
-            if len(contextual_contents) != len(batch_contents):
-                print(f"Warning: Expected {len(batch_contents)} results but got {len(contextual_contents)}")
-                # Use original contents as fallback
-                contextual_contents = batch_contents
-        else:
-            # If not using contextual embeddings, use original contents
-            contextual_contents = batch_contents
-        
-        # Create embeddings for the entire batch at once
-        batch_embeddings = create_embeddings_batch(contextual_contents)
-        
-        batch_data = []
-        for j in range(len(contextual_contents)):
-            # Extract metadata fields
-            chunk_size = len(contextual_contents[j])
-            
-            # Prepare data for insertion
-            data = {
-                "url": batch_urls[j],
-                "chunk_number": batch_chunk_numbers[j],
-                "content": contextual_contents[j],  # Store original content
-                "metadata": {
-                    "chunk_size": chunk_size,
-                    **batch_metadatas[j]
-                },
-                "embedding": batch_embeddings[j]  # Use embedding from contextual content
-            }
-            
-            batch_data.append(data)
-        
-        # Insert batch into Supabase
+        # For other errors (e.g., true 'Not Found' if client.get_collection raises something else,
+        # or network issues), assume it might not exist and try to create it.
+        # Qdrant client versions vary in how they report "Not Found".
+        # A more robust check for a 404 status code from 'e' might be needed if this proves problematic.
+        print(f"An unexpected error or 'Not Found' occurred while checking collection '{collection_name}': {e}. Attempting to create it.")
         try:
-            client.table("crawled_pages").insert(batch_data).execute()
-        except Exception as e:
-            print(f"Error inserting batch into Supabase: {e}")
+            client.create_collection(
+                collection_name=collection_name,
+                vectors_config=models.VectorParams(size=vector_dim, distance=models.Distance.COSINE)
+            )
+            print(f"Collection '{collection_name}' created with vector_dim={vector_dim}.")
+        except Exception as final_create_e:
+            # If create_collection also fails (e.g., it was a 409 because it did exist,
+            # or another network issue), then we log and re-raise.
+            print(f"Attempt to create collection '{collection_name}' also failed: {final_create_e}")
+            raise
 
-def search_documents(
-    client: Client, 
-    query: str, 
-    match_count: int = 10, 
-    filter_metadata: Optional[Dict[str, Any]] = None
+async def store_embeddings(
+    client: QdrantClient,
+    collection_name: str,
+    chunks: List[Dict[str, Any]],
+    source_url: str,
+    crawl_type: str,
+    batch_size: int = 32,
+    query_for_contextual_embedding: Optional[str] = None,
+    embedding_server_batch_size: int = 1
+) -> Tuple[int, int]:
+    """
+    Store text chunks and their embeddings in Qdrant, handling contextual embeddings.
+    """
+    points_to_upsert = []
+    successful_chunks = 0
+    failed_chunks = 0
+
+    # Prepare texts for batch embedding
+    texts_to_embed = []
+    for i, chunk_data in enumerate(chunks):
+        text_content = chunk_data.get("text", "")
+        # MODIFICATION: Always use original text, bypass summarization
+        texts_to_embed.append(text_content) # Embed original text only
+        # Old summarization logic to be removed/commented:
+        # if query_for_contextual_embedding and openai and SUMMARIZATION_MODEL_CHOICE:
+        #     # If contextual embedding is enabled, generate summary and prepend it
+        #     contextual_summary = await generate_contextual_embedding(text_content, source_url, query_for_contextual_embedding)
+        #     texts_to_embed.append(contextual_summary) # Embed the summary + original text
+        # else:
+        #     texts_to_embed.append(text_content) # Embed original text only
+
+    # Get all embeddings in a batch
+    all_embeddings = create_embeddings_batch(texts_to_embed, server_batch_size=embedding_server_batch_size)
+
+    for i, chunk_data in enumerate(chunks):
+        text_content = chunk_data.get("text", "")
+        embedding = all_embeddings[i]
+
+        if not embedding:  # Skip if embedding failed for this chunk
+            print(f"Skipping chunk {i+1} from {source_url} due to embedding failure.")
+            failed_chunks += 1
+            continue
+
+        # Use the text_content that was actually embedded (original or with summary)
+        embedded_text_payload = texts_to_embed[i]
+
+        payload = {
+            "url": source_url,
+            "text": embedded_text_payload, # Store the text that was embedded
+            # "original_text": text_content, # No longer needed if not summarizing
+            "source": urlparse(source_url).netloc,
+            "crawl_type": crawl_type,
+            "char_count": len(text_content), # char_count of the original text
+            "word_count": len(text_content.split()), # word_count of the original text
+            "chunk_index": i + 1,
+            "headers": chunk_data.get("headers", ""),
+            "contextual_embedding": False # Always false now
+            # Old logic for contextual_embedding:
+            # "contextual_embedding": bool(query_for_contextual_embedding and openai and SUMMARIZATION_MODEL_CHOICE and embedded_text_payload.startswith("Contextual Summary"))
+        }
+
+        points_to_upsert.append(
+            PointStruct(
+                id=str(uuid.uuid4()),
+                vector=embedding,
+                payload=payload
+            )
+        )
+        successful_chunks += 1
+
+        if len(points_to_upsert) >= batch_size:
+            try:
+                client.upsert(collection_name=collection_name, points=points_to_upsert)
+                print(f"Upserted {len(points_to_upsert)} points to '{collection_name}'.")
+                points_to_upsert = []
+            except Exception as e:
+                print(f"Error upserting batch to Qdrant: {e}")
+                # Decide how to handle batch failures, e.g., mark all in batch as failed
+                failed_chunks += len(points_to_upsert)
+                successful_chunks -= len(points_to_upsert)
+                points_to_upsert = [] 
+
+    if points_to_upsert: # Upsert any remaining points
+        try:
+            client.upsert(collection_name=collection_name, points=points_to_upsert)
+            print(f"Upserted remaining {len(points_to_upsert)} points to '{collection_name}'.")
+        except Exception as e:
+            print(f"Error upserting final batch to Qdrant: {e}")
+            failed_chunks += len(points_to_upsert)
+            successful_chunks -= len(points_to_upsert)
+
+    return successful_chunks, failed_chunks
+
+async def query_qdrant(
+    client: QdrantClient,
+    collection_name: str,
+    query_text: str,
+    source_filter: Optional[str] = None,
+    match_count: int = 5
 ) -> List[Dict[str, Any]]:
     """
-    Search for documents in Supabase using vector similarity.
-    
-    Args:
-        client: Supabase client
-        query: Query text
-        match_count: Maximum number of results to return
-        filter_metadata: Optional metadata filter
-        
-    Returns:
-        List of matching documents
+    Query Qdrant for relevant documents.
     """
-    # Create embedding for the query
-    query_embedding = create_embedding(query)
+    query_embedding = await get_embedding(query_text)
+    if not query_embedding:
+        print(f"Could not generate embedding for query: '{query_text}'. Returning empty list.")
+        return []
+
+    filter_conditions = []
+    if source_filter:
+        filter_conditions.append(
+            FieldCondition(
+                key="source",
+                match=MatchValue(value=source_filter)
+            )
+        )
     
-    # Execute the search using the match_crawled_pages function
+    qdrant_filter = Filter(must=filter_conditions) if filter_conditions else None
+
     try:
-        # Only include filter parameter if filter_metadata is provided and not empty
-        params = {
-            'query_embedding': query_embedding,
-            'match_count': match_count
-        }
+        search_result = client.search(
+            collection_name=collection_name,
+            query_vector=query_embedding,
+            query_filter=qdrant_filter,
+            limit=match_count,
+            with_payload=True
+        )
         
-        # Only add the filter if it's actually provided and not empty
-        if filter_metadata:
-            params['filter'] = filter_metadata  # Pass the dictionary directly, not JSON-encoded
-        
-        result = client.rpc('match_crawled_pages', params).execute()
-        
-        return result.data
+        results = []
+        for hit in search_result:
+            result = {
+                "url": hit.payload.get("url"),
+                "content": hit.payload.get("text"), # This will be summary + original if contextual was used
+                "original_content": hit.payload.get("original_text", hit.payload.get("text")), # Fallback to text if original_text not present
+                "metadata": {
+                    "source": hit.payload.get("source"),
+                    "crawl_type": hit.payload.get("crawl_type"),
+                    "char_count": hit.payload.get("char_count"),
+                    "word_count": hit.payload.get("word_count"),
+                    "chunk_index": hit.payload.get("chunk_index"),
+                    "headers": hit.payload.get("headers", ""),
+                    "crawl_time": hit.payload.get("crawl_time", "N/A"), # Add if available
+                    "contextual_embedding": hit.payload.get("contextual_embedding", False)
+                },
+                "similarity": hit.score
+            }
+            results.append(result)
+        return results
     except Exception as e:
-        print(f"Error searching documents: {e}")
+        print(f"Error querying Qdrant for '{query_text}': {e}")
+        return []
+
+async def get_available_sources(client: QdrantClient, collection_name: str) -> List[str]:
+    """
+    Get a list of unique source values from the Qdrant collection.
+    """
+    # Note: This is a placeholder for how you might implement this.
+    # Efficiently getting distinct metadata values in Qdrant can be tricky.
+    # One common approach is to scroll through all points, which can be slow.
+    # Or maintain a separate list/set of sources if this query is frequent.
+    # For now, returning a placeholder.
+    # A better approach would be to use Qdrant's scroll API and collect unique sources.
+    # However, for simplicity in this example, we'll leave it as a TODO if performance becomes an issue.
+    
+    # For a more robust solution, consider if your Qdrant client version supports aggregations or specific metadata queries.
+    # This is a simplified example that might not be performant on large datasets.
+    sources = set()
+    try:
+        # Scroll through all points with a small limit to fetch distinct sources
+        # This is NOT efficient for large datasets. Consider alternative strategies.
+        response, next_page_offset = client.scroll(
+            collection_name=collection_name, 
+            limit=1000, # Adjust as needed, but be mindful of performance
+            with_payload=["source"]
+        )
+        while response:
+            for hit in response:
+                if hit.payload and "source" in hit.payload:
+                    sources.add(hit.payload["source"])
+            if next_page_offset is None:
+                break
+            response, next_page_offset = client.scroll(
+                collection_name=collection_name, 
+                limit=1000, 
+                offset=next_page_offset, 
+                with_payload=["source"]
+            )
+        print(f"Found sources: {sources}")
+        return sorted(list(sources))
+    except Exception as e:
+        print(f"Error getting available sources from Qdrant: {e}")
         return []
