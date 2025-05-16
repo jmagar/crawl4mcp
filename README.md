@@ -18,6 +18,11 @@ At its core, this server leverages a self-hosted [BAAI/bge-large-en-v1.5](https:
 *   **⚙️ Self-Hosted Embeddings**: Generates high-quality embeddings locally using the BAAI/bge-large-en-v1.5 model via the included Text Embeddings Inference (TEI) server.
 *   **💾 Vector Storage**: Securely stores crawled content and their embeddings in the bundled Qdrant vector database.
 *   **🔍 RAG Queries**: Enables semantic search over the stored content using Retrieval Augmented Generation techniques.
+*   **🧩 Advanced Search Capabilities**:
+    *   Hybrid search combining vector similarity with keyword filtering
+    *   Item-to-item recommendations for content discovery
+    *   Vector clustering for pattern identification and knowledge organization
+*   **📊 Monitoring Tools**: Collection statistics dashboard for monitoring database usage and performance.
 *   **📝 Contextual Summaries (Optional)**: When configured with an OpenAI API key and model, it can generate query-focused summaries of text chunks before embedding, significantly improving retrieval relevance.
 *   **🎯 Source Filtering**: Allows RAG queries to be refined by specific source domains, giving you more control over your search.
 *   **🔌 MCP Integration**: Seamlessly exposes all crawling and RAG functionalities as tools compatible with the Model Context Protocol.
@@ -64,6 +69,11 @@ PORT=8051 # Port for the MCP server
 QDRANT_API_KEY= # Optional: Your Qdrant API Key if using an external Qdrant Cloud instance
 QDRANT_COLLECTION=crawled_pages # Or your preferred collection name
 VECTOR_DIM=1024 # Dimension for BAAI/bge-large-en-v1.5 embeddings
+
+# Text Chunking Configuration
+CHUNK_SIZE=500 # Size of each text chunk in characters
+CHUNK_OVERLAP=200 # Overlap between text chunks in characters
+MARKDOWN_CHUNK_SIZE=750 # Size of markdown chunks (larger to preserve structure)
 
 # Hugging Face Hub Token (if your TEI model requires it for download)
 # HUGGING_FACE_HUB_TOKEN=your_hf_token_here
@@ -126,11 +136,23 @@ python src/crawl4ai_mcp.py
 
 Once the server is up and running, it exposes the following tools through the Model Context Protocol:
 
+### Crawling Tools
+
 *   `mcp_crawl4ai_crawl_single_page(url: str)`: Crawls a single web page and stores its content.
 *   `mcp_crawl4ai_smart_crawl_url(url: str, max_depth: Optional[int] = 3, max_concurrent: Optional[int] = 10, chunk_size: Optional[int] = 5000)`: Intelligently crawls a given URL. It can detect and process sitemaps, text files containing URL lists, or perform recursive crawls on regular web pages. Content is then stored.
-*   `mcp_crawl4ai_crawl_repo(repo_url: str, branch: Optional[str] = None, chunk_size: int = 2000, chunk_overlap: int = 200, file_extensions: Optional[List[str]] = None)`: Clones a Git repository, processes specified file types (or a default list of common code/text extensions), chunks their content, and stores them for RAG.
+*   `mcp_crawl4ai_crawl_repo(repo_url: str, branch: Optional[str] = None, chunk_size: Optional[int] = None, chunk_overlap: Optional[int] = None)`: Clones a Git repository, processes all files, chunks their content, and stores them for RAG. Chunk size and overlap can be configured via parameters or environment variables.
+
+### Search & Retrieval Tools
+
 *   `mcp_crawl4ai_perform_rag_query(query: str, source: Optional[str] = None, match_count: Optional[int] = 5)`: Executes a Retrieval Augmented Generation query against the indexed content.
+*   `mcp_crawl4ai_perform_hybrid_search(query: str, filter_text: Optional[str] = None, vector_weight: Optional[float] = 0.7, keyword_weight: Optional[float] = 0.3, source: Optional[str] = None, match_count: Optional[int] = 5)`: Combines vector similarity search with keyword/text-based filtering for more precise results.
+*   `mcp_crawl4ai_item_recommendations(item_id: Optional[str] = None, content: Optional[str] = None, source: Optional[str] = None, match_count: Optional[int] = 5)`: Finds similar items based on vector similarity using either an existing item ID or provided content text.
+
+### Analytics & Monitoring Tools
+
 *   `mcp_crawl4ai_get_available_sources()`: Fetches a list of unique source domains that have been successfully crawled and stored.
+*   `mcp_crawl4ai_get_collection_statistics(collection_name: Optional[str] = None, include_segments: Optional[bool] = False)`: Provides detailed statistics about Qdrant collections including size, point count, and configuration details.
+*   `mcp_crawl4ai_vector_clustering(collection_name: Optional[str] = None, source: Optional[str] = None, num_clusters: Optional[int] = 5, sample_size: Optional[int] = 1000, generate_visualization: Optional[bool] = True, random_seed: Optional[int] = 42)`: Groups similar vectors to identify data patterns using K-means clustering with optional visualization.
 
 ## 🧑‍💻 Development
 
@@ -143,6 +165,53 @@ uv pip install -e ".[openai]"
 # Example: To run linters/formatters (e.g., using Ruff)
 # uv run ruff format .
 # uv run ruff check .
+```
+
+## 📚 Advanced Usage Examples
+
+### Hybrid Search
+
+The hybrid search combines vector similarity with keyword filtering:
+
+```python
+result = await mcp_crawl4ai_perform_hybrid_search(
+    query="machine learning optimization techniques",
+    filter_text="gradient descent",  # Will prioritize content containing this text
+    vector_weight=0.6,  # Give slightly more priority to semantic similarity
+    keyword_weight=0.4,  # And slightly less to keyword matching
+    match_count=10
+)
+```
+
+### Item-to-Item Recommendations
+
+Find content similar to an existing item:
+
+```python
+# Get recommendations based on an item ID
+result = await mcp_crawl4ai_item_recommendations(
+    item_id="01FGABCDEF123456",
+    match_count=5
+)
+
+# Or get recommendations based on text content
+result = await mcp_crawl4ai_item_recommendations(
+    content="This is example content to find similar items for",
+    match_count=5
+)
+```
+
+### Vector Clustering
+
+Identify patterns in your vector database:
+
+```python
+result = await mcp_crawl4ai_vector_clustering(
+    source="example.com",  # Optional: filter by source
+    num_clusters=7,  # Create 7 clusters
+    sample_size=2000,  # Use up to 2000 vectors
+    generate_visualization=True  # Include a visualization
+)
 ```
 
 ## 🙌 Contributing
