@@ -717,3 +717,207 @@ async def get_collection_stats(
             "success": False,
             "error": str(e)
         }
+
+async def get_similar_items(
+    client: QdrantClient,
+    collection_name: str,
+    item_id: str,
+    filter_condition: Optional[Dict[str, Any]] = None,
+    match_count: int = 5
+) -> List[Dict[str, Any]]:
+    """
+    Find similar items based on vector similarity using Qdrant's recommendation API.
+    
+    Args:
+        client: QdrantClient instance
+        collection_name: Name of the collection to search
+        item_id: ID of the item to find recommendations for
+        filter_condition: Optional filter criteria
+        match_count: Number of recommendations to return
+    
+    Returns:
+        List of dictionaries containing recommendation results
+    """
+    try:
+        # Prepare filter if provided
+        query_filter = None
+        if filter_condition:
+            # Convert the dict filter condition to a proper Qdrant Filter object
+            # This implementation assumes a simple key-value equality filter
+            filter_conditions = []
+            for key, value in filter_condition.items():
+                if isinstance(value, str):
+                    filter_conditions.append(
+                        FieldCondition(
+                            key=key,
+                            match=MatchValue(value=value)
+                        )
+                    )
+                # Add other types of conditions as needed
+            
+            if filter_conditions:
+                query_filter = Filter(must=filter_conditions)
+        
+        # Find similar items using the recommend API
+        recommend_result = client.recommend(
+            collection_name=collection_name,
+            positive=[item_id],  # ID of the item we want recommendations for
+            negative=[],  # Optional IDs to use as negative examples
+            query_filter=query_filter,
+            limit=match_count,
+            with_payload=True,
+            with_vectors=False,  # Usually not needed in results
+        )
+        
+        # Process results
+        results = []
+        for hit in recommend_result:
+            result = {
+                "id": hit.id,
+                "url": hit.payload.get("url"),
+                "content": hit.payload.get("text"),
+                "metadata": {
+                    "source": hit.payload.get("source"),
+                    "crawl_type": hit.payload.get("crawl_type"),
+                    "char_count": hit.payload.get("char_count"),
+                    "word_count": hit.payload.get("word_count"),
+                    "chunk_index": hit.payload.get("chunk_index"),
+                    "headers": hit.payload.get("headers", "")
+                },
+                "similarity": hit.score
+            }
+            results.append(result)
+        
+        return results
+    
+    except Exception as e:
+        print(f"Error finding similar items: {e}")
+        return []
+
+async def fetch_item_by_id(
+    client: QdrantClient,
+    collection_name: str,
+    item_id: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch a specific item by ID from a Qdrant collection.
+    
+    Args:
+        client: QdrantClient instance
+        collection_name: Name of the collection
+        item_id: ID of the item to fetch
+    
+    Returns:
+        Dictionary containing the item data if found, None otherwise
+    """
+    try:
+        # Retrieve the point by ID
+        points = client.retrieve(
+            collection_name=collection_name,
+            ids=[item_id],
+            with_payload=True,
+            with_vectors=False  # Usually not needed
+        )
+        
+        if not points:
+            print(f"No item found with ID: {item_id}")
+            return None
+        
+        point = points[0]
+        result = {
+            "id": point.id,
+            "url": point.payload.get("url"),
+            "content": point.payload.get("text"),
+            "metadata": {
+                "source": point.payload.get("source"),
+                "crawl_type": point.payload.get("crawl_type"),
+                "char_count": point.payload.get("char_count"),
+                "word_count": point.payload.get("word_count"),
+                "chunk_index": point.payload.get("chunk_index"),
+                "headers": point.payload.get("headers", "")
+            }
+        }
+        
+        return result
+    
+    except Exception as e:
+        print(f"Error fetching item by ID: {e}")
+        return None
+
+async def find_similar_content(
+    client: QdrantClient,
+    collection_name: str,
+    content_text: str,
+    filter_condition: Optional[Dict[str, Any]] = None,
+    match_count: int = 5
+) -> List[Dict[str, Any]]:
+    """
+    Find similar content based on text, not an existing item ID.
+    
+    Args:
+        client: QdrantClient instance
+        collection_name: Name of the collection to search
+        content_text: Text content to find similar items for
+        filter_condition: Optional filter criteria
+        match_count: Number of recommendations to return
+    
+    Returns:
+        List of dictionaries containing similar content results
+    """
+    try:
+        # First generate an embedding for the content
+        query_embedding = await get_embedding(content_text)
+        if not query_embedding:
+            print(f"Could not generate embedding for content text. Returning empty list.")
+            return []
+        
+        # Prepare filter if provided
+        query_filter = None
+        if filter_condition:
+            # Convert the dict filter condition to a proper Qdrant Filter object
+            filter_conditions = []
+            for key, value in filter_condition.items():
+                if isinstance(value, str):
+                    filter_conditions.append(
+                        FieldCondition(
+                            key=key,
+                            match=MatchValue(value=value)
+                        )
+                    )
+            
+            if filter_conditions:
+                query_filter = Filter(must=filter_conditions)
+        
+        # Search for similar content
+        search_result = client.search(
+            collection_name=collection_name,
+            query_vector=query_embedding,
+            query_filter=query_filter,
+            limit=match_count,
+            with_payload=True
+        )
+        
+        # Process results
+        results = []
+        for hit in search_result:
+            result = {
+                "id": hit.id,
+                "url": hit.payload.get("url"),
+                "content": hit.payload.get("text"),
+                "metadata": {
+                    "source": hit.payload.get("source"),
+                    "crawl_type": hit.payload.get("crawl_type"),
+                    "char_count": hit.payload.get("char_count"),
+                    "word_count": hit.payload.get("word_count"),
+                    "chunk_index": hit.payload.get("chunk_index"),
+                    "headers": hit.payload.get("headers", "")
+                },
+                "similarity": hit.score
+            }
+            results.append(result)
+        
+        return results
+    
+    except Exception as e:
+        print(f"Error finding similar content: {e}")
+        return []

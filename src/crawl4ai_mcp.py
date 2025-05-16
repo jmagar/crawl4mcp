@@ -889,6 +889,114 @@ Collections:
             "error": str(e)
         }, indent=2)
 
+@mcp.tool()
+async def item_recommendations(
+    ctx: Context,
+    item_id: str = None,
+    content: str = None, 
+    source: str = None,
+    match_count: int = 5
+) -> str:
+    """
+    Find similar items based on vector similarity using Qdrant's recommendation API.
+    
+    This tool can find similar content in two ways:
+    1. Based on an existing item ID in the database
+    2. Based on a piece of text provided directly
+    
+    At least one of item_id or content must be provided.
+    
+    Args:
+        ctx: The MCP server provided context
+        item_id: Optional ID of an existing item to find recommendations for
+        content: Optional text content to find similar items for
+        source: Optional source domain to filter results (e.g., 'example.com')
+        match_count: Maximum number of recommendations to return (default: 5)
+    
+    Returns:
+        JSON string with recommendation results
+    """
+    try:
+        # Get the Qdrant client from the context
+        qdrant_client = ctx.request_context.lifespan_context.qdrant_client
+        collection_name = ctx.request_context.lifespan_context.collection_name
+        
+        # Ensure at least one of item_id or content is provided
+        if not item_id and not content:
+            return json.dumps({
+                "success": False,
+                "error": "Either item_id or content must be provided"
+            }, indent=2)
+        
+        # Prepare source filter if provided
+        filter_condition = None
+        if source and source.strip():
+            filter_condition = {"source": source}
+        
+        # Recommendation based on item ID
+        if item_id:
+            # First fetch the original item for context
+            original_item = await fetch_item_by_id(
+                client=qdrant_client,
+                collection_name=collection_name,
+                item_id=item_id
+            )
+            
+            if original_item is None:
+                return json.dumps({
+                    "success": False,
+                    "error": f"No item found with ID: {item_id}"
+                }, indent=2)
+            
+            # Get similar items
+            similar_items = await get_similar_items(
+                client=qdrant_client,
+                collection_name=collection_name,
+                item_id=item_id,
+                filter_condition=filter_condition,
+                match_count=match_count
+            )
+            
+            return json.dumps({
+                "success": True,
+                "recommendation_type": "item-based",
+                "original_item": original_item,
+                "source_filter": source,
+                "recommendations": similar_items,
+                "count": len(similar_items)
+            }, indent=2)
+        
+        # Recommendation based on content text
+        else:
+            # Get similar content
+            similar_items = await find_similar_content(
+                client=qdrant_client,
+                collection_name=collection_name,
+                content_text=content,
+                filter_condition=filter_condition,
+                match_count=match_count
+            )
+            
+            # Calculate a preview of the query content (truncated)
+            content_preview = content
+            if len(content) > 150:
+                content_preview = content[:150] + "..."
+            
+            return json.dumps({
+                "success": True,
+                "recommendation_type": "content-based",
+                "query_content_preview": content_preview,
+                "source_filter": source,
+                "recommendations": similar_items,
+                "count": len(similar_items)
+            }, indent=2)
+    
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e)
+        }, indent=2)
+
 async def main():
     transport = os.getenv("TRANSPORT", "sse")
     if transport == 'sse':
