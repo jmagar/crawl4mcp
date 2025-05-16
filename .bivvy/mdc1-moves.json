@@ -17,12 +17,12 @@
       "details": "Implement tool to find similar items based on vector similarity using Qdrant recommendation API"
     },
     {
-      "status": "climbing",
+      "status": "done",
       "description": "Add vector clustering tool",
       "details": "Implement tool to group similar vectors and identify data patterns"
     },
     {
-      "status": "todo",
+      "status": "climbing",
       "description": "Update documentation",
       "details": "Add documentation for the new tools in the README.md file"
     },
