@@ -22,12 +22,12 @@
       "details": "Implement tool to group similar vectors and identify data patterns"
     },
     {
-      "status": "climbing",
+      "status": "done",
       "description": "Update documentation",
       "details": "Add documentation for the new tools in the README.md file"
     },
     {
-      "status": "todo",
+      "status": "climbing",
       "description": "Add helper functions to utils.py",
       "details": "Create shared functions for embedding processing and result formatting"
     }
