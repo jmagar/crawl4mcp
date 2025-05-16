@@ -7,6 +7,9 @@ WORKDIR /app
 # Install uv
 RUN pip install uv
 
+# Install git
+RUN apt-get update && apt-get install -y git
+
 # Copy the MCP server files
 COPY . .
 

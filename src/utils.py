@@ -29,6 +29,9 @@ EMBEDDING_SERVER_URL = os.getenv("EMBEDDING_SERVER_URL")
 if not EMBEDDING_SERVER_URL:
     raise ValueError("EMBEDDING_SERVER_URL must be set in the environment variables.")
 
+# New: Configurable batch size for embedding server requests
+EMBEDDING_SERVER_BATCH_SIZE = int(os.getenv("EMBEDDING_SERVER_BATCH_SIZE", "32"))
+
 def get_qdrant_client() -> QdrantClient:
     """
     Get a Qdrant client with the URL and API key from environment variables.
@@ -207,12 +210,13 @@ async def store_embeddings(
     chunks: List[Dict[str, Any]],
     source_url: str,
     crawl_type: str,
-    batch_size: int = 32,
-    query_for_contextual_embedding: Optional[str] = None,
-    embedding_server_batch_size: int = 1
+    batch_size: int = 32, # This is Qdrant upsert batch size
+    query_for_contextual_embedding: Optional[str] = None
+    # embedding_server_batch_size: int = 1 # Parameter removed, will use global EMBEDDING_SERVER_BATCH_SIZE
 ) -> Tuple[int, int]:
     """
     Store text chunks and their embeddings in Qdrant, handling contextual embeddings.
+    Uses the global EMBEDDING_SERVER_BATCH_SIZE for batching requests to the embedding server.
     """
     points_to_upsert = []
     successful_chunks = 0
@@ -233,7 +237,7 @@ async def store_embeddings(
         #     texts_to_embed.append(text_content) # Embed original text only
 
     # Get all embeddings in a batch
-    all_embeddings = create_embeddings_batch(texts_to_embed, server_batch_size=embedding_server_batch_size)
+    all_embeddings = create_embeddings_batch(texts_to_embed, server_batch_size=EMBEDDING_SERVER_BATCH_SIZE)
 
     for i, chunk_data in enumerate(chunks):
         text_content = chunk_data.get("text", "")
