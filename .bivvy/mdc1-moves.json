@@ -2,17 +2,17 @@
   "Climb": "mdc1",
   "moves": [
     {
-      "status": "climbing",
+      "status": "done",
       "description": "Add hybrid search tool",
       "details": "Implement hybrid search combining vector similarity with keyword filtering"
     },
     {
-      "status": "todo",
+      "status": "done",
       "description": "Add collection statistics dashboard tool",
       "details": "Implement tool to monitor collection size, point count, and memory usage"
     },
     {
-      "status": "todo",
+      "status": "climbing",
       "description": "Add item-to-item recommendations tool",
       "details": "Implement tool to find similar items based on vector similarity using Qdrant recommendation API"
     },
