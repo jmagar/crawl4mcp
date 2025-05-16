@@ -580,3 +580,140 @@ async def get_available_sources(client: QdrantClient, collection_name: str) -> L
     except Exception as e:
         print(f"Error getting available sources from Qdrant: {e}")
         return []
+
+async def get_collection_stats(
+    client: QdrantClient, 
+    collection_name: Optional[str] = None,
+    include_segments: bool = False
+) -> Dict[str, Any]:
+    """
+    Get statistics about a Qdrant collection or all collections.
+    
+    Args:
+        client: QdrantClient instance
+        collection_name: Optional name of the collection to query 
+                        (if None, stats for all collections are returned)
+        include_segments: Whether to include segment-level details
+        
+    Returns:
+        Dictionary containing collection statistics
+    """
+    try:
+        # Get collections info
+        collections_info = []
+        all_collection_names = []
+        
+        # Get list of all collections if collection_name is not specified
+        if collection_name is None:
+            try:
+                # Get all collections
+                all_collections = client.get_collections()
+                all_collection_names = [coll.name for coll in all_collections.collections]
+            except Exception as e:
+                print(f"Error getting all collections: {e}")
+                return {
+                    "success": False,
+                    "error": f"Failed to get collections list: {str(e)}"
+                }
+        else:
+            all_collection_names = [collection_name]
+        
+        # Get info for each collection
+        for coll_name in all_collection_names:
+            try:
+                # Get collection info
+                collection_info = client.get_collection(coll_name)
+                
+                # Get collection cluster info (shard stats, etc.)
+                try:
+                    cluster_info = client.collection_cluster_info(coll_name)
+                    cluster_data = {
+                        "peer_count": len(cluster_info.peer_id_to_shard_count) if hasattr(cluster_info, 'peer_id_to_shard_count') else 0,
+                        "shard_count": sum(cluster_info.peer_id_to_shard_count.values()) if hasattr(cluster_info, 'peer_id_to_shard_count') else 0,
+                    }
+                except Exception as e:
+                    # Cluster info may not be available in single-node setups
+                    cluster_data = {
+                        "peer_count": 1,
+                        "shard_count": 1,
+                        "note": "Cluster info unavailable or running in single-node mode"
+                    }
+                
+                # Get collection telemetry
+                try:
+                    telemetry = client.get_collection_telemetry(coll_name)
+                    telemetry_data = {
+                        "api_call_distributions": telemetry.api_call_distribution,
+                        "latency_distributions": telemetry.latency_percentiles
+                    } if telemetry else {}
+                except Exception as e:
+                    telemetry_data = {
+                        "note": "Telemetry data unavailable"
+                    }
+                
+                # Get segment info if requested
+                segments_data = {}
+                if include_segments:
+                    try:
+                        segments = client.get_collection_shards(coll_name)
+                        segments_data = {
+                            "segments": segments.shards
+                        } if segments else {}
+                    except Exception as e:
+                        segments_data = {
+                            "note": f"Segment data unavailable: {str(e)}"
+                        }
+                
+                # Count points
+                count_result = client.count(
+                    collection_name=coll_name,
+                    exact=True
+                )
+                
+                # Combine info
+                collection_data = {
+                    "name": coll_name,
+                    "status": collection_info.status,
+                    "vectors_count": count_result.count,
+                    "vectors": collection_info.config.params.vectors,
+                    "hnsw_config": collection_info.config.hnsw_config._asdict() if hasattr(collection_info.config, 'hnsw_config') else {},
+                    "optimizers_config": collection_info.config.optimizers_config._asdict() if hasattr(collection_info.config, 'optimizers_config') else {},
+                    "replication_factor": collection_info.config.params.replication_factor if hasattr(collection_info.config.params, 'replication_factor') else 1,
+                    "write_consistency_factor": collection_info.config.params.write_consistency_factor if hasattr(collection_info.config.params, 'write_consistency_factor') else 1,
+                    "on_disk_payload": collection_info.config.params.on_disk_payload if hasattr(collection_info.config.params, 'on_disk_payload') else False,
+                    "cluster_info": cluster_data,
+                    "telemetry": telemetry_data,
+                }
+                
+                # Add segments data if requested
+                if include_segments:
+                    collection_data["segments"] = segments_data
+                
+                collections_info.append(collection_data)
+                
+            except Exception as e:
+                # If a specific collection has an error, add error info but continue with others
+                print(f"Error getting info for collection '{coll_name}': {e}")
+                collections_info.append({
+                    "name": coll_name,
+                    "error": str(e)
+                })
+        
+        # Calculate summary stats
+        total_vectors = sum(coll_info.get("vectors_count", 0) for coll_info in collections_info if "vectors_count" in coll_info)
+        
+        # Return formatted stats
+        return {
+            "success": True,
+            "timestamp": str(uuid.uuid4()),  # Use as a unique ID for this stats snapshot
+            "total_collections": len(collections_info),
+            "total_vectors": total_vectors,
+            "collections": collections_info
+        }
+        
+    except Exception as e:
+        print(f"Error getting collection stats: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }

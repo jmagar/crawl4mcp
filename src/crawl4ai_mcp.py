@@ -28,7 +28,8 @@ from utils import (
     ensure_qdrant_collection_async as async_ensure_collection_exists,
     store_embeddings,
     query_qdrant,
-    get_available_sources as get_available_sources_async
+    get_available_sources as get_available_sources_async,
+    get_collection_stats
 )
 
 # Load environment variables from the project root .env file
@@ -796,6 +797,95 @@ async def perform_hybrid_search(
         return json.dumps({
             "success": False,
             "query": query,
+            "error": str(e)
+        }, indent=2)
+
+@mcp.tool()
+async def get_collection_statistics(
+    ctx: Context,
+    collection_name: str = None,
+    include_segments: bool = False
+) -> str:
+    """
+    Get statistics about Qdrant collections and their usage.
+    
+    This tool provides a dashboard of collection metrics including size, point count,
+    and configurations. It can target a specific collection or all collections.
+    
+    Args:
+        ctx: The MCP server provided context
+        collection_name: Optional name of a specific collection to analyze
+                        (if None, all collections are analyzed)
+        include_segments: Whether to include detailed segment-level information
+    
+    Returns:
+        JSON string with collection statistics
+    """
+    try:
+        # Get the Qdrant client from the context
+        qdrant_client = ctx.request_context.lifespan_context.qdrant_client
+        
+        # Use default collection from context if none specified
+        if collection_name is None or collection_name.strip() == "":
+            default_collection = ctx.request_context.lifespan_context.collection_name
+            print(f"No collection specified, using default: {default_collection}")
+            
+            # If 'all' is explicitly requested, set to None to get all collections
+            if default_collection.lower() == "all":
+                collection_name = None
+            else:
+                collection_name = default_collection
+                
+        # Get collection stats
+        stats = await get_collection_stats(
+            client=qdrant_client,
+            collection_name=collection_name,
+            include_segments=include_segments
+        )
+        
+        # Format human-readable summary
+        if stats.get("success", False):
+            summary = {
+                "success": True,
+                "timestamp": stats["timestamp"],
+                "summary": {
+                    "total_collections": stats["total_collections"],
+                    "total_vectors": stats["total_vectors"],
+                    "collections_analyzed": [c["name"] for c in stats["collections"]]
+                },
+                "collections": stats["collections"]
+            }
+            
+            # Add a human-readable section
+            collection_summaries = []
+            for coll in stats["collections"]:
+                if "error" in coll:
+                    collection_summaries.append(f"- {coll['name']}: ERROR - {coll['error']}")
+                else:
+                    collection_summaries.append(
+                        f"- {coll['name']}: {coll.get('vectors_count', 'N/A')} vectors, "
+                        f"status: {coll.get('status', 'N/A')}, "
+                        f"{coll.get('cluster_info', {}).get('peer_count', 1)} peers, "
+                        f"{coll.get('cluster_info', {}).get('shard_count', 1)} shards"
+                    )
+            
+            collection_list = "\n".join(collection_summaries)
+            summary["human_readable"] = f"""
+Collection Statistics Summary:
+- Total Collections: {stats['total_collections']}
+- Total Vectors: {stats['total_vectors']}
+
+Collections:
+{collection_list}
+            """.strip()
+            
+            return json.dumps(summary, indent=2)
+        else:
+            return json.dumps(stats, indent=2)
+            
+    except Exception as e:
+        return json.dumps({
+            "success": False,
             "error": str(e)
         }, indent=2)
 
