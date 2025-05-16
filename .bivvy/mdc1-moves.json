@@ -32,7 +32,7 @@
       "details": "Create shared functions for embedding processing and result formatting"
     },
     {
-      "status": "climbing",
+      "status": "done",
       "description": "Commit final changes",
       "details": "Commit the helper functions and refactored code to complete the climb"
     }
