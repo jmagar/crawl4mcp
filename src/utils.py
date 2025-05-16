@@ -32,6 +32,135 @@ if not EMBEDDING_SERVER_URL:
 # New: Configurable batch size for embedding server requests
 EMBEDDING_SERVER_BATCH_SIZE = int(os.getenv("EMBEDDING_SERVER_BATCH_SIZE", "32"))
 
+def create_qdrant_filter(source_filter: Optional[str] = None, filter_condition: Optional[Dict[str, Any]] = None) -> Optional[Filter]:
+    """
+    Create a standardized Qdrant filter object from various input types.
+    
+    This helper function consolidates filter creation logic used across multiple functions.
+    
+    Args:
+        source_filter: Optional source domain for filtering (simple string filter)
+        filter_condition: Optional dictionary of filter conditions (more complex filtering)
+    
+    Returns:
+        Qdrant Filter object if any filters are provided, otherwise None
+    """
+    filter_conditions = []
+    
+    # Add source filter if provided
+    if source_filter and source_filter.strip():
+        filter_conditions.append(
+            FieldCondition(
+                key="source",
+                match=MatchValue(value=source_filter)
+            )
+        )
+    
+    # Add dictionary-based filters if provided
+    if filter_condition:
+        for key, value in filter_condition.items():
+            if isinstance(value, str):
+                filter_conditions.append(
+                    FieldCondition(
+                        key=key,
+                        match=MatchValue(value=value)
+                    )
+                )
+            elif isinstance(value, dict) and 'text' in value:
+                # Support text match filters
+                filter_conditions.append(
+                    FieldCondition(
+                        key=key,
+                        match=MatchText(text=value['text'])
+                    )
+                )
+    
+    # Return Filter object if we have conditions, otherwise None
+    return Filter(must=filter_conditions) if filter_conditions else None
+
+def format_search_result(hit: Any, include_score: bool = True, search_type: str = "semantic") -> Dict[str, Any]:
+    """
+    Format a Qdrant search result hit into a standardized dictionary.
+    
+    This helper function provides consistent result formatting across different search functions.
+    
+    Args:
+        hit: A search result hit from Qdrant
+        include_score: Whether to include the similarity score in the result
+        search_type: Type of search that produced this result (semantic, hybrid, etc.)
+    
+    Returns:
+        Dictionary with standardized format for search results
+    """
+    result = {
+        "id": hit.id,
+        "url": hit.payload.get("url"),
+        "content": hit.payload.get("text"),
+        "original_content": hit.payload.get("original_text", hit.payload.get("text")),
+        "metadata": enhance_payload_metadata(hit.payload, search_type)
+    }
+    
+    # Add score information if available and requested
+    if include_score and hasattr(hit, "score"):
+        result["similarity"] = hit.score
+        
+        # For backward compatibility
+        if "combined_score" not in result and search_type != "hybrid":
+            result["combined_score"] = hit.score
+    
+    return result
+
+def enhance_payload_metadata(payload: Dict[str, Any], search_type: str = "semantic") -> Dict[str, Any]:
+    """
+    Create or enhance metadata from a payload with consistent fields.
+    
+    This helper ensures all metadata fields are present with sensible defaults.
+    
+    Args:
+        payload: The payload dictionary from a Qdrant point
+        search_type: Type of search that produced this result
+    
+    Returns:
+        Dictionary with standardized metadata
+    """
+    # Core metadata fields with defaults
+    metadata = {
+        "source": payload.get("source", "unknown"),
+        "crawl_type": payload.get("crawl_type", "unknown"),
+        "char_count": payload.get("char_count", 0),
+        "word_count": payload.get("word_count", 0),
+        "chunk_index": payload.get("chunk_index", 0),
+        "headers": payload.get("headers", ""),
+        "crawl_time": payload.get("crawl_time", "N/A"),
+        "contextual_embedding": payload.get("contextual_embedding", False),
+        "search_type": search_type
+    }
+    
+    # Add any additional metadata fields present in payload
+    for key, value in payload.items():
+        if key not in ["url", "text", "original_text"] and key not in metadata:
+            metadata[key] = value
+    
+    return metadata
+
+def handle_search_error(error: Exception, operation: str, query: str = "") -> List[Dict[str, Any]]:
+    """
+    Standardized error handling for search operations.
+    
+    This helper provides consistent error logging and empty results for error cases.
+    
+    Args:
+        error: The exception that occurred
+        operation: Description of the operation that failed (for logging)
+        query: Optional query string that was being processed (for logging)
+    
+    Returns:
+        Empty list (standardized error result)
+    """
+    query_info = f" for '{query}'" if query else ""
+    print(f"Error {operation}{query_info}: {error}")
+    return []
+
 def get_qdrant_client() -> QdrantClient:
     """
     Get a Qdrant client with the URL and API key from environment variables.
@@ -313,16 +442,8 @@ async def query_qdrant(
         print(f"Could not generate embedding for query: '{query_text}'. Returning empty list.")
         return []
 
-    filter_conditions = []
-    if source_filter:
-        filter_conditions.append(
-            FieldCondition(
-                key="source",
-                match=MatchValue(value=source_filter)
-            )
-        )
-    
-    qdrant_filter = Filter(must=filter_conditions) if filter_conditions else None
+    # Use the new helper function to create a filter from source_filter
+    qdrant_filter = create_qdrant_filter(source_filter=source_filter)
 
     try:
         search_result = client.search(
@@ -333,29 +454,15 @@ async def query_qdrant(
             with_payload=True
         )
         
+        # Use the new helper function for result formatting
         results = []
         for hit in search_result:
-            result = {
-                "url": hit.payload.get("url"),
-                "content": hit.payload.get("text"), # This will be summary + original if contextual was used
-                "original_content": hit.payload.get("original_text", hit.payload.get("text")), # Fallback to text if original_text not present
-                "metadata": {
-                    "source": hit.payload.get("source"),
-                    "crawl_type": hit.payload.get("crawl_type"),
-                    "char_count": hit.payload.get("char_count"),
-                    "word_count": hit.payload.get("word_count"),
-                    "chunk_index": hit.payload.get("chunk_index"),
-                    "headers": hit.payload.get("headers", ""),
-                    "crawl_time": hit.payload.get("crawl_time", "N/A"), # Add if available
-                    "contextual_embedding": hit.payload.get("contextual_embedding", False)
-                },
-                "similarity": hit.score
-            }
+            result = format_search_result(hit, search_type="semantic")
             results.append(result)
         return results
     except Exception as e:
-        print(f"Error querying Qdrant for '{query_text}': {e}")
-        return []
+        # Use the new helper function for error handling
+        return handle_search_error(e, "querying Qdrant", query_text)
 
 async def perform_hybrid_search(
     client: QdrantClient,
@@ -389,29 +496,18 @@ async def perform_hybrid_search(
         vector_weight = vector_weight / total
         keyword_weight = keyword_weight / total
     
-    # Prepare filter conditions
-    filter_conditions = []
-    if source_filter:
-        filter_conditions.append(
-            FieldCondition(
-                key="source",
-                match=MatchValue(value=source_filter)
-            )
-        )
+    # Create filter conditions using the helper function
+    # Create a filter condition dictionary to include both source and text filters
+    filter_condition = {}
+    if source_filter and source_filter.strip():
+        filter_condition["source"] = source_filter
     
-    # If we have keyword filter text, prepare the payload filter
-    keyword_filter = None
+    # If we have keyword filter text, add it to the filter condition
     if filter_text and filter_text.strip():
-        # Build a text search filter - this is a basic implementation
-        # Could be enhanced with more sophisticated text search capabilities
-        keyword_filter = FieldCondition(
-            key="text",
-            match=MatchText(text=filter_text)
-        )
-        filter_conditions.append(keyword_filter)
+        filter_condition["text"] = {"text": filter_text}
     
-    # Build the combined filter
-    qdrant_filter = Filter(must=filter_conditions) if filter_conditions else None
+    # Use the helper function to create the Qdrant filter
+    qdrant_filter = create_qdrant_filter(filter_condition=filter_condition)
     
     try:
         # Get embedding for vector search
@@ -431,46 +527,33 @@ async def perform_hybrid_search(
                 with_payload=True
             )
             
-            # Standard result processing
+            # Use the helper function for result formatting
             results = []
             for hit in search_result:
-                result = {
-                    "url": hit.payload.get("url"),
-                    "content": hit.payload.get("text"),
-                    "original_content": hit.payload.get("original_text", hit.payload.get("text")),
-                    "metadata": {
-                        "source": hit.payload.get("source"),
-                        "crawl_type": hit.payload.get("crawl_type"),
-                        "char_count": hit.payload.get("char_count"),
-                        "word_count": hit.payload.get("word_count"),
-                        "chunk_index": hit.payload.get("chunk_index"),
-                        "headers": hit.payload.get("headers", ""),
-                        "crawl_time": hit.payload.get("crawl_time", "N/A"),
-                        "contextual_embedding": hit.payload.get("contextual_embedding", False),
-                        "search_type": "vector_only"
-                    },
-                    "similarity": hit.score,
-                    "combined_score": hit.score  # Combined score is just vector score
-                }
+                # The search type is "vector_only" in this case
+                result = format_search_result(hit, search_type="vector_only")
+                # Ensure combined_score is present for consistency
+                result["combined_score"] = result["similarity"]
                 results.append(result)
             return results
         
         # For true hybrid search, use Qdrant's query API which supports combined searches
-        # This is a simplified implementation - the actual implementation would use
-        # Qdrant's more sophisticated hybrid search capabilities
+        # Create a filter without the text condition for vector search
+        vector_filter = create_qdrant_filter(source_filter=source_filter)
         
         # First get vector search results
         vector_results = client.search(
             collection_name=collection_name,
             query_vector=query_embedding,
-            query_filter=qdrant_filter,
+            query_filter=vector_filter,
             limit=match_count * 2,  # Get more results for better combination
             with_payload=True
         )
         
-        # Get text search results (simplified implementation)
-        # In a full implementation, this would use Qdrant's text search capabilities
-        text_filter = Filter(must=[keyword_filter]) if keyword_filter else None
+        # Create a filter with only the text condition for text search
+        text_filter = create_qdrant_filter(filter_condition={"text": {"text": filter_text}}) if filter_text else None
+        
+        # Get text search results
         text_results = client.scroll(
             collection_name=collection_name,
             filter=text_filter,
@@ -481,26 +564,15 @@ async def perform_hybrid_search(
         # Combine results
         result_map = {}  # Map of ID to combined result
         
-        # Process vector results
+        # Process vector results using the helper function
         for hit in vector_results:
-            result_map[hit.id] = {
-                "id": hit.id,
-                "url": hit.payload.get("url"),
-                "content": hit.payload.get("text"),
-                "original_content": hit.payload.get("original_text", hit.payload.get("text")),
-                "metadata": {
-                    "source": hit.payload.get("source"),
-                    "crawl_type": hit.payload.get("crawl_type"),
-                    "char_count": hit.payload.get("char_count"),
-                    "word_count": hit.payload.get("word_count"),
-                    "chunk_index": hit.payload.get("chunk_index"),
-                    "headers": hit.payload.get("headers", ""),
-                    "search_type": "hybrid"
-                },
-                "vector_score": hit.score,
-                "keyword_score": 0.0,
-                "combined_score": hit.score * vector_weight
-            }
+            # Format the result with the helper
+            result = format_search_result(hit, search_type="hybrid")
+            # Add hybrid-specific scores
+            result["vector_score"] = hit.score
+            result["keyword_score"] = 0.0
+            result["combined_score"] = hit.score * vector_weight
+            result_map[hit.id] = result
         
         # Process text results and combine with vector results
         for hit in text_results:
@@ -509,25 +581,13 @@ async def perform_hybrid_search(
                 result_map[hit.id]["keyword_score"] = 1.0  # Simplified score for text match
                 result_map[hit.id]["combined_score"] += 1.0 * keyword_weight
             else:
-                # Add new result from text search
-                result_map[hit.id] = {
-                    "id": hit.id,
-                    "url": hit.payload.get("url"),
-                    "content": hit.payload.get("text"),
-                    "original_content": hit.payload.get("original_text", hit.payload.get("text")),
-                    "metadata": {
-                        "source": hit.payload.get("source"),
-                        "crawl_type": hit.payload.get("crawl_type"),
-                        "char_count": hit.payload.get("char_count"),
-                        "word_count": hit.payload.get("word_count"),
-                        "chunk_index": hit.payload.get("chunk_index"),
-                        "headers": hit.payload.get("headers", ""),
-                        "search_type": "hybrid"
-                    },
-                    "vector_score": 0.0,
-                    "keyword_score": 1.0,  # Simplified score for text match
-                    "combined_score": 1.0 * keyword_weight
-                }
+                # Add new result from text search using the helper
+                result = format_search_result(hit, search_type="hybrid")
+                # Add hybrid-specific scores
+                result["vector_score"] = 0.0
+                result["keyword_score"] = 1.0  # Simplified score for text match
+                result["combined_score"] = 1.0 * keyword_weight
+                result_map[hit.id] = result
         
         # Convert map to list and sort by combined score
         combined_results = list(result_map.values())
@@ -537,8 +597,7 @@ async def perform_hybrid_search(
         return combined_results[:match_count]
     
     except Exception as e:
-        print(f"Error performing hybrid search: {e}")
-        return []
+        return handle_search_error(e, "performing hybrid search", query_text)
 
 async def get_available_sources(client: QdrantClient, collection_name: str) -> List[str]:
     """
@@ -739,24 +798,8 @@ async def get_similar_items(
         List of dictionaries containing recommendation results
     """
     try:
-        # Prepare filter if provided
-        query_filter = None
-        if filter_condition:
-            # Convert the dict filter condition to a proper Qdrant Filter object
-            # This implementation assumes a simple key-value equality filter
-            filter_conditions = []
-            for key, value in filter_condition.items():
-                if isinstance(value, str):
-                    filter_conditions.append(
-                        FieldCondition(
-                            key=key,
-                            match=MatchValue(value=value)
-                        )
-                    )
-                # Add other types of conditions as needed
-            
-            if filter_conditions:
-                query_filter = Filter(must=filter_conditions)
+        # Use helper function to create filter
+        query_filter = create_qdrant_filter(filter_condition=filter_condition)
         
         # Find similar items using the recommend API
         recommend_result = client.recommend(
@@ -769,30 +812,16 @@ async def get_similar_items(
             with_vectors=False,  # Usually not needed in results
         )
         
-        # Process results
+        # Process results using helper function
         results = []
         for hit in recommend_result:
-            result = {
-                "id": hit.id,
-                "url": hit.payload.get("url"),
-                "content": hit.payload.get("text"),
-                "metadata": {
-                    "source": hit.payload.get("source"),
-                    "crawl_type": hit.payload.get("crawl_type"),
-                    "char_count": hit.payload.get("char_count"),
-                    "word_count": hit.payload.get("word_count"),
-                    "chunk_index": hit.payload.get("chunk_index"),
-                    "headers": hit.payload.get("headers", "")
-                },
-                "similarity": hit.score
-            }
+            result = format_search_result(hit, search_type="item_recommendation")
             results.append(result)
         
         return results
     
     except Exception as e:
-        print(f"Error finding similar items: {e}")
-        return []
+        return handle_search_error(e, "finding similar items", f"item_id={item_id}")
 
 async def fetch_item_by_id(
     client: QdrantClient,
@@ -871,22 +900,8 @@ async def find_similar_content(
             print(f"Could not generate embedding for content text. Returning empty list.")
             return []
         
-        # Prepare filter if provided
-        query_filter = None
-        if filter_condition:
-            # Convert the dict filter condition to a proper Qdrant Filter object
-            filter_conditions = []
-            for key, value in filter_condition.items():
-                if isinstance(value, str):
-                    filter_conditions.append(
-                        FieldCondition(
-                            key=key,
-                            match=MatchValue(value=value)
-                        )
-                    )
-            
-            if filter_conditions:
-                query_filter = Filter(must=filter_conditions)
+        # Use helper function to create filter
+        query_filter = create_qdrant_filter(filter_condition=filter_condition)
         
         # Search for similar content
         search_result = client.search(
@@ -897,30 +912,16 @@ async def find_similar_content(
             with_payload=True
         )
         
-        # Process results
+        # Process results using helper function
         results = []
         for hit in search_result:
-            result = {
-                "id": hit.id,
-                "url": hit.payload.get("url"),
-                "content": hit.payload.get("text"),
-                "metadata": {
-                    "source": hit.payload.get("source"),
-                    "crawl_type": hit.payload.get("crawl_type"),
-                    "char_count": hit.payload.get("char_count"),
-                    "word_count": hit.payload.get("word_count"),
-                    "chunk_index": hit.payload.get("chunk_index"),
-                    "headers": hit.payload.get("headers", "")
-                },
-                "similarity": hit.score
-            }
+            result = format_search_result(hit, search_type="content_similarity")
             results.append(result)
         
         return results
     
     except Exception as e:
-        print(f"Error finding similar content: {e}")
-        return []
+        return handle_search_error(e, "finding similar content", content_text[:50] + "...")
 
 async def fetch_vectors_for_clustering(
     client: QdrantClient,
@@ -946,21 +947,8 @@ async def fetch_vectors_for_clustering(
         - List of corresponding IDs
     """
     try:
-        # Convert filter_condition dictionary to Qdrant Filter object if provided
-        query_filter = None
-        if filter_condition:
-            filter_conditions = []
-            for key, value in filter_condition.items():
-                if isinstance(value, str):
-                    filter_conditions.append(
-                        FieldCondition(
-                            key=key,
-                            match=MatchValue(value=value)
-                        )
-                    )
-            
-            if filter_conditions:
-                query_filter = Filter(must=filter_conditions)
+        # Use helper function to create filter
+        query_filter = create_qdrant_filter(filter_condition=filter_condition)
         
         # Default payload fields if none specified
         if with_payload_fields is None:
