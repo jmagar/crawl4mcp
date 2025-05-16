@@ -128,6 +128,7 @@ Once the server is up and running, it exposes the following tools through the Mo
 
 *   `mcp_crawl4ai_crawl_single_page(url: str)`: Crawls a single web page and stores its content.
 *   `mcp_crawl4ai_smart_crawl_url(url: str, max_depth: Optional[int] = 3, max_concurrent: Optional[int] = 10, chunk_size: Optional[int] = 5000)`: Intelligently crawls a given URL. It can detect and process sitemaps, text files containing URL lists, or perform recursive crawls on regular web pages. Content is then stored.
+*   `mcp_crawl4ai_crawl_repo(repo_url: str, branch: Optional[str] = None, chunk_size: int = 2000, chunk_overlap: int = 200, file_extensions: Optional[List[str]] = None)`: Clones a Git repository, processes specified file types (or a default list of common code/text extensions), chunks their content, and stores them for RAG.
 *   `mcp_crawl4ai_perform_rag_query(query: str, source: Optional[str] = None, match_count: Optional[int] = 5)`: Executes a Retrieval Augmented Generation query against the indexed content.
 *   `mcp_crawl4ai_get_available_sources()`: Fetches a list of unique source domains that have been successfully crawled and stored.
 

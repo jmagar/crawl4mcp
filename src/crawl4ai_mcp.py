@@ -38,6 +38,13 @@ dotenv_path = project_root / '.env'
 # Force override of existing environment variables
 load_dotenv(dotenv_path, override=True)
 
+# Chunking configuration from environment variables
+# Regular text chunking (used for code files and general text)
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "500"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
+# Markdown chunking (specialized for preserving markdown structure like headers and code blocks)
+MARKDOWN_CHUNK_SIZE = int(os.getenv("MARKDOWN_CHUNK_SIZE", "750"))
+
 # Create a dataclass for our application context
 @dataclass
 class Crawl4AIContext:
@@ -140,8 +147,12 @@ def parse_sitemap(sitemap_url: str) -> List[str]:
 
     return urls
 
-def smart_chunk_markdown(text: str, chunk_size: int = 5000) -> List[str]:
+def smart_chunk_markdown(text: str, chunk_size: int = None) -> List[str]:
     """Split text into chunks, respecting code blocks and paragraphs."""
+    # Use environment variable or default if chunk_size not provided
+    if chunk_size is None:
+        chunk_size = MARKDOWN_CHUNK_SIZE
+
     chunks = []
     start = 0
     text_length = len(text)
@@ -204,10 +215,16 @@ def extract_section_info(chunk: str) -> Dict[str, Any]:
         "word_count": len(chunk.split())
     }
 
-def simple_text_chunker(text: str, chunk_size: int = 2000, chunk_overlap: int = 200) -> List[str]:
+def simple_text_chunker(text: str, chunk_size: int = None, chunk_overlap: int = None) -> List[str]:
     """
     Splits text into chunks with overlap, suitable for general text or code.
     """
+    # Use environment variables or defaults if not provided
+    if chunk_size is None:
+        chunk_size = CHUNK_SIZE
+    if chunk_overlap is None:
+        chunk_overlap = CHUNK_OVERLAP
+
     chunks = []
     start = 0
     text_length = len(text)
@@ -257,8 +274,8 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
         result = await crawler.arun(url=url, config=run_config)
         
         if result.success and result.markdown:
-            # Chunk the content
-            chunks_text = smart_chunk_markdown(result.markdown, chunk_size=750)
+            # Use the default markdown chunk size from environment variable
+            chunks_text = smart_chunk_markdown(result.markdown)
             
             # Prepare chunk data for store_embeddings
             chunks_data_for_qdrant = []
@@ -308,9 +325,8 @@ async def crawl_repo(
     ctx: Context,
     repo_url: str,
     branch: Optional[str] = None,
-    chunk_size: int = 500,
-    chunk_overlap: int = 200,
-    file_extensions: Optional[List[str]] = None
+    chunk_size: int = None,
+    chunk_overlap: int = None
 ) -> str:
     """
     Clones a Git repository, processes specified file types, and stores their content in Qdrant.
@@ -321,19 +337,16 @@ async def crawl_repo(
         branch: Optional specific branch to clone. Defaults to the repository's default branch.
         chunk_size: Size of each text chunk in characters for processing.
         chunk_overlap: Overlap between text chunks in characters.
-        file_extensions: Optional list of file extensions to process (e.g., [".py", ".md"]). 
-                         Defaults to a predefined list of common code/text extensions.
 
     Returns:
         JSON string with crawl summary and storage information.
     """
-    if file_extensions is None:
-        file_extensions = [
-            ".py", ".md", ".txt", ".js", ".ts", ".java", ".c", ".cpp", ".h", ".cs", 
-            ".go", ".rb", ".php", ".html", ".css", ".json", ".yaml", ".yml", ".sh",
-            ".ipynb", ".rst", ".xml", ".kt", ".swift", ".pl", ".scala", ".rs"
-        ]
-
+    # Use default values from environment variables if parameters are None
+    if chunk_size is None:
+        chunk_size = CHUNK_SIZE
+    if chunk_overlap is None:
+        chunk_overlap = CHUNK_OVERLAP
+    
     try:
         qdrant_client = ctx.request_context.lifespan_context.qdrant_client
         collection_name = ctx.request_context.lifespan_context.collection_name
@@ -363,51 +376,51 @@ async def crawl_repo(
             total_failed_chunks = 0
             files_with_errors = []
 
-            for extension in file_extensions:
-                for file_path_obj in repo_path.rglob(f"*{extension}"):
-                    if file_path_obj.is_file():
-                        relative_path = file_path_obj.relative_to(repo_path)
-                        try:
-                            with open(file_path_obj, "r", encoding="utf-8", errors="ignore") as f:
-                                content = f.read()
-                            
-                            if not content.strip():
-                                continue
-                            
-                            # Use the new simple_text_chunker
-                            current_file_chunks_text = simple_text_chunker(
-                                content, 
-                                chunk_size=chunk_size, 
-                                chunk_overlap=chunk_overlap
-                            )
-                            
-                            if not current_file_chunks_text:
-                                continue
-
-                            chunks_data_for_qdrant = []
-                            for i, chunk_content in enumerate(current_file_chunks_text):
-                                meta_info = f"File: {str(relative_path)} - Chunk: {i+1}/{len(current_file_chunks_text)}"
-                                chunks_data_for_qdrant.append({
-                                    "text": chunk_content,
-                                    "headers": meta_info, 
-                                })
-                            
-                            if chunks_data_for_qdrant:
-                                successful, failed = await store_embeddings(
-                                    client=qdrant_client,
-                                    collection_name=collection_name,
-                                    chunks=chunks_data_for_qdrant,
-                                    source_url=f"{repo_url} (file: {str(relative_path)})",
-                                    crawl_type="repository"
-                                )
-                                total_successful_chunks += successful
-                                total_failed_chunks += failed
-                                processed_files_count += 1
+            # Loop over all files recursively
+            for file_path_obj in repo_path.rglob("*"):
+                if file_path_obj.is_file():
+                    relative_path = file_path_obj.relative_to(repo_path)
+                    try:
+                        with open(file_path_obj, "r", encoding="utf-8", errors="ignore") as f:
+                            content = f.read()
                         
-                        except Exception as e:
-                            error_detail = f"Error processing file {str(relative_path)}: {str(e)}"
-                            print(error_detail) # Log to server console
-                            files_with_errors.append(str(relative_path))
+                        if not content.strip():
+                            continue
+                        
+                        # Use the new simple_text_chunker
+                        current_file_chunks_text = simple_text_chunker(
+                            content, 
+                            chunk_size=chunk_size, 
+                            chunk_overlap=chunk_overlap
+                        )
+                        
+                        if not current_file_chunks_text:
+                            continue
+
+                        chunks_data_for_qdrant = []
+                        for i, chunk_content in enumerate(current_file_chunks_text):
+                            meta_info = f"File: {str(relative_path)} - Chunk: {i+1}/{len(current_file_chunks_text)}"
+                            chunks_data_for_qdrant.append({
+                                "text": chunk_content,
+                                "headers": meta_info, 
+                            })
+                        
+                        if chunks_data_for_qdrant:
+                            successful, failed = await store_embeddings(
+                                client=qdrant_client,
+                                collection_name=collection_name,
+                                chunks=chunks_data_for_qdrant,
+                                source_url=f"{repo_url} (file: {str(relative_path)})",
+                                crawl_type="repository"
+                            )
+                            total_successful_chunks += successful
+                            total_failed_chunks += failed
+                            processed_files_count += 1
+                    
+                    except Exception as e:
+                        error_detail = f"Error processing file {str(relative_path)}: {str(e)}"
+                        print(error_detail) # Log to server console
+                        files_with_errors.append(str(relative_path))
             
             summary = {
                 "success": True,
@@ -431,7 +444,7 @@ async def crawl_repo(
         }, indent=2)
 
 @mcp.tool()
-async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concurrent: int = 10, chunk_size: int = 5000) -> str:
+async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concurrent: int = 10, chunk_size: int = None) -> str:
     """
     Intelligently crawl a URL based on its type and store content in Qdrant.
     
@@ -447,11 +460,15 @@ async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concur
         url: URL to crawl (can be a regular webpage, sitemap.xml, or .txt file)
         max_depth: Maximum recursion depth for regular URLs (default: 3)
         max_concurrent: Maximum number of concurrent browser sessions (default: 10)
-        chunk_size: Maximum size of each content chunk in characters (default: 5000)
-    
+        chunk_size: Maximum size of each content chunk in characters, defaults to MARKDOWN_CHUNK_SIZE
+
     Returns:
         JSON string with crawl summary and storage information
     """
+    # Use markdown chunk size if not specified (since we're dealing with web content)
+    if chunk_size is None:
+        chunk_size = MARKDOWN_CHUNK_SIZE
+    
     try:
         # Get the crawler and Qdrant client from the context
         crawler = ctx.request_context.lifespan_context.crawler
@@ -500,7 +517,7 @@ async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concur
             markdown_content = doc_data['markdown']
             processed_urls.add(source_url)
             
-            chunks_text = smart_chunk_markdown(markdown_content, chunk_size=750)
+            chunks_text = smart_chunk_markdown(markdown_content, chunk_size=chunk_size)
             
             current_page_chunks_data = []
             for i, chunk_content in enumerate(chunks_text):

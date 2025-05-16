@@ -23,6 +23,7 @@ services:
   #     - --dtype=float16                 # Use FP16 for RTX 4070 tensor cores
   #     - --pooling=mean                  # BGE-large uses mean pooling
   #     - --max-client-batch-size=64      # Increased batch size
+  #     - --payload-limit=10000000        # Set payload limit to 10MB
   #   deploy:
   #     resources:
   #       reservations:
