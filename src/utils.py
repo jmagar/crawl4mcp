@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import requests
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from qdrant_client.http.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+from qdrant_client.http.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue, MatchText
 from qdrant_client.http.exceptions import ResponseHandlingException
 
 # Attempt to import OpenAI and initialize if API key is present (for summarization)
@@ -355,6 +355,189 @@ async def query_qdrant(
         return results
     except Exception as e:
         print(f"Error querying Qdrant for '{query_text}': {e}")
+        return []
+
+async def perform_hybrid_search(
+    client: QdrantClient,
+    collection_name: str,
+    query_text: str,
+    filter_text: Optional[str] = None,
+    vector_weight: float = 0.7,
+    keyword_weight: float = 0.3,
+    source_filter: Optional[str] = None,
+    match_count: int = 5
+) -> List[Dict[str, Any]]:
+    """
+    Perform a hybrid search combining vector similarity with keyword/text-based filtering.
+    
+    Args:
+        client: QdrantClient instance
+        collection_name: Name of the collection to search
+        query_text: The query text for semantic vector search
+        filter_text: Optional keyword text for filtering (text search)
+        vector_weight: Weight for vector search results (0.0-1.0)
+        keyword_weight: Weight for keyword search results (0.0-1.0)
+        source_filter: Optional source domain to filter results
+        match_count: Maximum number of results to return
+    
+    Returns:
+        List of dictionaries containing search results with combined score
+    """
+    if vector_weight + keyword_weight != 1.0:
+        # Normalize weights if they don't sum to 1.0
+        total = vector_weight + keyword_weight
+        vector_weight = vector_weight / total
+        keyword_weight = keyword_weight / total
+    
+    # Prepare filter conditions
+    filter_conditions = []
+    if source_filter:
+        filter_conditions.append(
+            FieldCondition(
+                key="source",
+                match=MatchValue(value=source_filter)
+            )
+        )
+    
+    # If we have keyword filter text, prepare the payload filter
+    keyword_filter = None
+    if filter_text and filter_text.strip():
+        # Build a text search filter - this is a basic implementation
+        # Could be enhanced with more sophisticated text search capabilities
+        keyword_filter = FieldCondition(
+            key="text",
+            match=MatchText(text=filter_text)
+        )
+        filter_conditions.append(keyword_filter)
+    
+    # Build the combined filter
+    qdrant_filter = Filter(must=filter_conditions) if filter_conditions else None
+    
+    try:
+        # Get embedding for vector search
+        query_embedding = await get_embedding(query_text)
+        if not query_embedding:
+            print(f"Could not generate embedding for hybrid search query: '{query_text}'. Returning empty list.")
+            return []
+        
+        # Perform hybrid search
+        # If there's no keyword filter, perform standard vector search
+        if not filter_text or not filter_text.strip():
+            search_result = client.search(
+                collection_name=collection_name,
+                query_vector=query_embedding,
+                query_filter=qdrant_filter,
+                limit=match_count,
+                with_payload=True
+            )
+            
+            # Standard result processing
+            results = []
+            for hit in search_result:
+                result = {
+                    "url": hit.payload.get("url"),
+                    "content": hit.payload.get("text"),
+                    "original_content": hit.payload.get("original_text", hit.payload.get("text")),
+                    "metadata": {
+                        "source": hit.payload.get("source"),
+                        "crawl_type": hit.payload.get("crawl_type"),
+                        "char_count": hit.payload.get("char_count"),
+                        "word_count": hit.payload.get("word_count"),
+                        "chunk_index": hit.payload.get("chunk_index"),
+                        "headers": hit.payload.get("headers", ""),
+                        "crawl_time": hit.payload.get("crawl_time", "N/A"),
+                        "contextual_embedding": hit.payload.get("contextual_embedding", False),
+                        "search_type": "vector_only"
+                    },
+                    "similarity": hit.score,
+                    "combined_score": hit.score  # Combined score is just vector score
+                }
+                results.append(result)
+            return results
+        
+        # For true hybrid search, use Qdrant's query API which supports combined searches
+        # This is a simplified implementation - the actual implementation would use
+        # Qdrant's more sophisticated hybrid search capabilities
+        
+        # First get vector search results
+        vector_results = client.search(
+            collection_name=collection_name,
+            query_vector=query_embedding,
+            query_filter=qdrant_filter,
+            limit=match_count * 2,  # Get more results for better combination
+            with_payload=True
+        )
+        
+        # Get text search results (simplified implementation)
+        # In a full implementation, this would use Qdrant's text search capabilities
+        text_filter = Filter(must=[keyword_filter]) if keyword_filter else None
+        text_results = client.scroll(
+            collection_name=collection_name,
+            filter=text_filter,
+            limit=match_count * 2,  # Get more results for better combination
+            with_payload=True
+        )[0]  # scroll returns a tuple (results, next_page_offset)
+        
+        # Combine results
+        result_map = {}  # Map of ID to combined result
+        
+        # Process vector results
+        for hit in vector_results:
+            result_map[hit.id] = {
+                "id": hit.id,
+                "url": hit.payload.get("url"),
+                "content": hit.payload.get("text"),
+                "original_content": hit.payload.get("original_text", hit.payload.get("text")),
+                "metadata": {
+                    "source": hit.payload.get("source"),
+                    "crawl_type": hit.payload.get("crawl_type"),
+                    "char_count": hit.payload.get("char_count"),
+                    "word_count": hit.payload.get("word_count"),
+                    "chunk_index": hit.payload.get("chunk_index"),
+                    "headers": hit.payload.get("headers", ""),
+                    "search_type": "hybrid"
+                },
+                "vector_score": hit.score,
+                "keyword_score": 0.0,
+                "combined_score": hit.score * vector_weight
+            }
+        
+        # Process text results and combine with vector results
+        for hit in text_results:
+            if hit.id in result_map:
+                # Update existing result with text score
+                result_map[hit.id]["keyword_score"] = 1.0  # Simplified score for text match
+                result_map[hit.id]["combined_score"] += 1.0 * keyword_weight
+            else:
+                # Add new result from text search
+                result_map[hit.id] = {
+                    "id": hit.id,
+                    "url": hit.payload.get("url"),
+                    "content": hit.payload.get("text"),
+                    "original_content": hit.payload.get("original_text", hit.payload.get("text")),
+                    "metadata": {
+                        "source": hit.payload.get("source"),
+                        "crawl_type": hit.payload.get("crawl_type"),
+                        "char_count": hit.payload.get("char_count"),
+                        "word_count": hit.payload.get("word_count"),
+                        "chunk_index": hit.payload.get("chunk_index"),
+                        "headers": hit.payload.get("headers", ""),
+                        "search_type": "hybrid"
+                    },
+                    "vector_score": 0.0,
+                    "keyword_score": 1.0,  # Simplified score for text match
+                    "combined_score": 1.0 * keyword_weight
+                }
+        
+        # Convert map to list and sort by combined score
+        combined_results = list(result_map.values())
+        combined_results.sort(key=lambda x: x["combined_score"], reverse=True)
+        
+        # Return top results
+        return combined_results[:match_count]
+    
+    except Exception as e:
+        print(f"Error performing hybrid search: {e}")
         return []
 
 async def get_available_sources(client: QdrantClient, collection_name: str) -> List[str]:

@@ -727,6 +727,78 @@ async def perform_rag_query(ctx: Context, query: str, source: str = None, match_
             "error": str(e)
         }, indent=2)
 
+@mcp.tool()
+async def perform_hybrid_search(
+    ctx: Context, 
+    query: str, 
+    filter_text: str = None, 
+    vector_weight: float = 0.7, 
+    keyword_weight: float = 0.3, 
+    source: str = None, 
+    match_count: int = 5
+) -> str:
+    """
+    Perform a hybrid search combining vector similarity with keyword/text-based filtering.
+    
+    This tool enhances search by combining semantic vector search with keyword filtering,
+    allowing for more precise and flexible querying of the vector database.
+    
+    Args:
+        ctx: The MCP server provided context
+        query: The query text for semantic vector search
+        filter_text: Optional keyword text for filtering (text search)
+        vector_weight: Weight for vector results (0.0-1.0, default: 0.7)
+        keyword_weight: Weight for keyword results (0.0-1.0, default: 0.3)
+        source: Optional source domain to filter results (e.g., 'example.com')
+        match_count: Maximum number of results to return (default: 5)
+    
+    Returns:
+        JSON string with the hybrid search results
+    """
+    try:
+        # Get the Qdrant client from the context
+        qdrant_client = ctx.request_context.lifespan_context.qdrant_client
+        collection_name = ctx.request_context.lifespan_context.collection_name
+        
+        # Validate weights
+        if not (0.0 <= vector_weight <= 1.0) or not (0.0 <= keyword_weight <= 1.0):
+            return json.dumps({
+                "success": False,
+                "query": query,
+                "error": "Weights must be between 0.0 and 1.0"
+            }, indent=2)
+        
+        # Perform the hybrid search
+        results = await perform_hybrid_search(
+            client=qdrant_client,
+            collection_name=collection_name,
+            query_text=query,
+            filter_text=filter_text,
+            vector_weight=vector_weight,
+            keyword_weight=keyword_weight,
+            source_filter=source if source and source.strip() else None,
+            match_count=match_count
+        )
+        
+        return json.dumps({
+            "success": True,
+            "query": query,
+            "filter_text": filter_text,
+            "weights": {
+                "vector": vector_weight,
+                "keyword": keyword_weight
+            },
+            "source_filter": source,
+            "results": results,
+            "count": len(results)
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "query": query,
+            "error": str(e)
+        }, indent=2)
+
 async def main():
     transport = os.getenv("TRANSPORT", "sse")
     if transport == 'sse':
