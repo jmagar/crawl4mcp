@@ -921,3 +921,302 @@ async def find_similar_content(
     except Exception as e:
         print(f"Error finding similar content: {e}")
         return []
+
+async def fetch_vectors_for_clustering(
+    client: QdrantClient,
+    collection_name: str,
+    filter_condition: Optional[Dict[str, Any]] = None,
+    sample_size: int = 1000,
+    with_payload_fields: Optional[List[str]] = None
+) -> Tuple[List[List[float]], List[Dict[str, Any]], List[str]]:
+    """
+    Fetch vectors and their payloads from Qdrant for clustering analysis.
+    
+    Args:
+        client: QdrantClient instance
+        collection_name: Name of the collection
+        filter_condition: Optional filter to apply (e.g., by source)
+        sample_size: Maximum number of vectors to fetch
+        with_payload_fields: Specific payload fields to include
+    
+    Returns:
+        Tuple containing:
+        - List of vectors
+        - List of corresponding payloads
+        - List of corresponding IDs
+    """
+    try:
+        # Convert filter_condition dictionary to Qdrant Filter object if provided
+        query_filter = None
+        if filter_condition:
+            filter_conditions = []
+            for key, value in filter_condition.items():
+                if isinstance(value, str):
+                    filter_conditions.append(
+                        FieldCondition(
+                            key=key,
+                            match=MatchValue(value=value)
+                        )
+                    )
+            
+            if filter_conditions:
+                query_filter = Filter(must=filter_conditions)
+        
+        # Default payload fields if none specified
+        if with_payload_fields is None:
+            with_payload_fields = ["url", "text", "source", "crawl_type", "headers"]
+        
+        # Fetch points using scroll - this is more efficient for getting many points
+        points, _ = client.scroll(
+            collection_name=collection_name,
+            limit=sample_size,
+            filter=query_filter,
+            with_payload=with_payload_fields,
+            with_vectors=True
+        )
+        
+        if not points:
+            print(f"No points found in collection '{collection_name}' with the given filter.")
+            return [], [], []
+        
+        # Extract vectors, payloads, and IDs
+        vectors = []
+        payloads = []
+        ids = []
+        
+        for point in points:
+            if point.vector:
+                vectors.append(point.vector)
+                payloads.append(point.payload)
+                ids.append(point.id)
+        
+        print(f"Fetched {len(vectors)} vectors for clustering from collection '{collection_name}'.")
+        return vectors, payloads, ids
+    
+    except Exception as e:
+        print(f"Error fetching vectors for clustering: {e}")
+        return [], [], []
+
+async def perform_kmeans_clustering(
+    vectors: List[List[float]],
+    payloads: List[Dict[str, Any]],
+    ids: List[str],
+    num_clusters: int = 5,
+    random_seed: int = 42
+) -> Dict[str, Any]:
+    """
+    Perform K-means clustering on a set of vectors.
+    
+    Args:
+        vectors: List of vectors to cluster
+        payloads: List of corresponding payloads
+        ids: List of corresponding IDs
+        num_clusters: Number of clusters to create
+        random_seed: Random seed for reproducibility
+    
+    Returns:
+        Dictionary with clustering results
+    """
+    try:
+        import numpy as np
+        from sklearn.cluster import KMeans
+        from sklearn.metrics import silhouette_score
+    except ImportError:
+        print("Required libraries (numpy, scikit-learn) not found. Please install with:")
+        print("pip install numpy scikit-learn")
+        return {
+            "success": False,
+            "error": "Required libraries not installed. Install with: pip install numpy scikit-learn"
+        }
+    
+    if not vectors:
+        return {
+            "success": False,
+            "error": "No vectors provided for clustering"
+        }
+    
+    try:
+        # Convert to numpy array
+        X = np.array(vectors)
+        
+        # Adjust num_clusters if we have fewer points than requested clusters
+        if len(X) < num_clusters:
+            num_clusters = max(2, len(X) // 2)  # At least 2 clusters if possible
+            print(f"Adjusted number of clusters to {num_clusters} based on available data")
+        
+        # Perform K-means clustering
+        kmeans = KMeans(n_clusters=num_clusters, random_state=random_seed, n_init=10)
+        cluster_labels = kmeans.fit_predict(X)
+        
+        # Calculate silhouette score if we have enough clusters and data points
+        silhouette_avg = None
+        if num_clusters > 1 and len(X) > num_clusters:
+            try:
+                silhouette_avg = float(silhouette_score(X, cluster_labels))
+            except Exception as e:
+                print(f"Error calculating silhouette score: {e}")
+        
+        # Organize items by cluster
+        clusters = {}
+        for i in range(num_clusters):
+            cluster_indices = np.where(cluster_labels == i)[0]
+            cluster_items = []
+            
+            for idx in cluster_indices:
+                if idx < len(ids) and idx < len(payloads):
+                    item = {
+                        "id": ids[idx],
+                        "payload": payloads[idx],
+                        "distance_to_centroid": float(np.linalg.norm(X[idx] - kmeans.cluster_centers_[i]))
+                    }
+                    cluster_items.append(item)
+            
+            # Sort items by distance to centroid
+            cluster_items.sort(key=lambda x: x["distance_to_centroid"])
+            
+            # Get representative items (closest to centroid)
+            representative_items = cluster_items[:min(5, len(cluster_items))]
+            
+            # Try to extract common keywords or themes for this cluster
+            all_text = " ".join([item["payload"].get("text", "") for item in representative_items])
+            cluster_themes = extract_cluster_themes(all_text)
+            
+            clusters[str(i)] = {
+                "size": len(cluster_indices),
+                "percentage": float(len(cluster_indices) / len(X) * 100),
+                "themes": cluster_themes,
+                "representative_items": representative_items
+            }
+        
+        # Return clustering results
+        return {
+            "success": True,
+            "num_clusters": num_clusters,
+            "total_points": len(X),
+            "silhouette_score": silhouette_avg,
+            "clusters": clusters,
+            "cluster_distribution": {str(i): int(np.sum(cluster_labels == i)) for i in range(num_clusters)}
+        }
+    
+    except Exception as e:
+        print(f"Error performing K-means clustering: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+def extract_cluster_themes(text: str, max_themes: int = 5) -> List[str]:
+    """
+    Extract potential themes or keywords from cluster content.
+    
+    Args:
+        text: Combined text from cluster items
+        max_themes: Maximum number of themes to extract
+    
+    Returns:
+        List of potential themes or keywords
+    """
+    try:
+        from sklearn.feature_extraction.text import CountVectorizer
+        from nltk.corpus import stopwords
+        import nltk
+        
+        # Ensure nltk resources are available
+        try:
+            nltk.data.find('corpora/stopwords')
+        except LookupError:
+            nltk.download('stopwords', quiet=True)
+        
+        # Get stopwords
+        stop_words = set(stopwords.words('english'))
+        
+        # Add additional stopwords relevant to our content
+        additional_stops = {'https', 'http', 'www', 'com', 'html', 'the', 'and', 'for', 'with'}
+        stop_words.update(additional_stops)
+        
+        # Use CountVectorizer to extract keywords
+        vectorizer = CountVectorizer(
+            max_features=max_themes*3,  # Get more words initially for filtering
+            stop_words=list(stop_words),
+            ngram_range=(1, 2)  # Allow for both single words and bigrams
+        )
+        
+        # Fit the vectorizer and get the top words
+        X = vectorizer.fit_transform([text])
+        words = vectorizer.get_feature_names_out()
+        counts = X.toarray()[0]
+        
+        # Pair words with their counts and sort
+        word_counts = list(zip(words, counts))
+        word_counts.sort(key=lambda x: x[1], reverse=True)
+        
+        # Take the top words
+        themes = [word for word, count in word_counts[:max_themes] if count > 1]
+        
+        return themes
+    
+    except Exception as e:
+        print(f"Error extracting cluster themes: {e}")
+        # Return empty list if there's an error
+        return []
+
+async def visualize_clusters(
+    vectors: List[List[float]], 
+    cluster_labels: List[int],
+    output_format: str = "plotly_json"
+) -> Optional[Dict[str, Any]]:
+    """
+    Generate a visualization of clusters.
+    
+    Args:
+        vectors: List of vectors
+        cluster_labels: List of cluster assignments
+        output_format: Format for output ('plotly_json', 'base64_image', etc.)
+    
+    Returns:
+        Dictionary with visualization data or None if error
+    """
+    try:
+        import numpy as np
+        from sklearn.manifold import TSNE
+        import plotly.graph_objects as go
+        import plotly.express as px
+        import json
+        
+        # Convert to numpy arrays
+        X = np.array(vectors)
+        labels = np.array(cluster_labels)
+        
+        # Reduce dimensions with t-SNE for visualization
+        tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, max(5, len(X) // 10)))
+        X_2d = tsne.fit_transform(X)
+        
+        # Create plot with plotly
+        fig = px.scatter(
+            x=X_2d[:, 0], 
+            y=X_2d[:, 1],
+            color=[str(label) for label in labels],
+            title="Vector Clustering Visualization (t-SNE 2D projection)",
+            labels={"color": "Cluster"}
+        )
+        
+        # Return in requested format
+        if output_format == "plotly_json":
+            return {
+                "type": "plotly",
+                "data": json.loads(fig.to_json())
+            }
+        else:
+            # Default to returning plotly json
+            return {
+                "type": "plotly",
+                "data": json.loads(fig.to_json()),
+                "note": f"Requested format '{output_format}' not supported, defaulting to plotly_json"
+            }
+    
+    except ImportError:
+        print("Required libraries (numpy, scikit-learn, plotly) not found for visualization.")
+        return None
+    except Exception as e:
+        print(f"Error generating cluster visualization: {e}")
+        return None

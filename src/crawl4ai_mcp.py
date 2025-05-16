@@ -29,7 +29,13 @@ from utils import (
     store_embeddings,
     query_qdrant,
     get_available_sources as get_available_sources_async,
-    get_collection_stats
+    get_collection_stats,
+    get_similar_items,
+    fetch_item_by_id,
+    find_similar_content,
+    fetch_vectors_for_clustering,
+    perform_kmeans_clustering,
+    visualize_clusters
 )
 
 # Load environment variables from the project root .env file
@@ -990,6 +996,161 @@ async def item_recommendations(
                 "recommendations": similar_items,
                 "count": len(similar_items)
             }, indent=2)
+    
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e)
+        }, indent=2)
+
+@mcp.tool()
+async def vector_clustering(
+    ctx: Context,
+    collection_name: str = None,
+    source: str = None,
+    num_clusters: int = 5,
+    sample_size: int = 1000,
+    generate_visualization: bool = True,
+    random_seed: int = 42
+) -> str:
+    """
+    Group similar vectors to identify data patterns using K-means clustering.
+    
+    This tool analyzes vectors in the Qdrant collection to find natural groupings
+    in the data, and identifies themes within each cluster. It can optionally
+    generate a visualization of the clusters.
+    
+    Args:
+        ctx: The MCP server provided context
+        collection_name: Optional name of a specific collection to analyze
+                        (if None, uses the default collection)
+        source: Optional source domain to filter vectors (e.g., 'example.com')
+        num_clusters: Number of clusters to create (default: 5)
+        sample_size: Maximum number of vectors to analyze (default: 1000)
+        generate_visualization: Whether to generate a visualization (default: True)
+        random_seed: Random seed for reproducible clustering (default: 42)
+    
+    Returns:
+        JSON string with clustering results
+    """
+    try:
+        # Check if required dependencies are installed
+        try:
+            import numpy
+            import sklearn
+        except ImportError:
+            return json.dumps({
+                "success": False,
+                "error": "Required libraries (numpy, scikit-learn) not installed. Install with: pip install numpy scikit-learn"
+            }, indent=2)
+        
+        # For visualization, check if plotly is installed
+        vis_available = True
+        if generate_visualization:
+            try:
+                import plotly
+            except ImportError:
+                vis_available = False
+                print("Plotly not installed. Visualization will be disabled.")
+        
+        # Get the Qdrant client from the context
+        qdrant_client = ctx.request_context.lifespan_context.qdrant_client
+        
+        # Use default collection from context if none specified
+        if collection_name is None or collection_name.strip() == "":
+            collection_name = ctx.request_context.lifespan_context.collection_name
+            print(f"No collection specified, using default: {collection_name}")
+            
+        # Prepare source filter if provided
+        filter_condition = None
+        if source and source.strip():
+            filter_condition = {"source": source}
+        
+        # Fetch vectors for clustering
+        vectors, payloads, ids = await fetch_vectors_for_clustering(
+            client=qdrant_client,
+            collection_name=collection_name,
+            filter_condition=filter_condition,
+            sample_size=sample_size
+        )
+        
+        if not vectors:
+            return json.dumps({
+                "success": False,
+                "error": f"No vectors found in collection '{collection_name}' with the given filter"
+            }, indent=2)
+        
+        # Perform clustering
+        clustering_result = await perform_kmeans_clustering(
+            vectors=vectors,
+            payloads=payloads,
+            ids=ids,
+            num_clusters=num_clusters,
+            random_seed=random_seed
+        )
+        
+        if not clustering_result.get("success", False):
+            return json.dumps(clustering_result, indent=2)
+        
+        # Generate visualization if requested
+        visualization = None
+        if generate_visualization and vis_available:
+            try:
+                # Extract cluster labels from the clustering result
+                cluster_labels = []
+                for i in range(len(vectors)):
+                    # Find which cluster this vector belongs to
+                    for cluster_idx in range(num_clusters):
+                        cluster_items = clustering_result["clusters"][str(cluster_idx)]["representative_items"]
+                        if any(item["id"] == ids[i] for item in cluster_items):
+                            cluster_labels.append(cluster_idx)
+                            break
+                    else:
+                        # If not found in representative items, assign to cluster 0
+                        cluster_labels.append(0)
+                
+                visualization = await visualize_clusters(
+                    vectors=vectors,
+                    cluster_labels=cluster_labels
+                )
+            except Exception as e:
+                print(f"Error generating visualization: {e}")
+                visualization = {"error": str(e)}
+        
+        # Prepare result summary
+        result = {
+            "success": True,
+            "collection": collection_name,
+            "source_filter": source,
+            "clustering": clustering_result
+        }
+        
+        # Add visualization if available
+        if visualization:
+            result["visualization"] = visualization
+        
+        # Generate a text summary of the clusters
+        cluster_summaries = []
+        for i in range(num_clusters):
+            cluster = clustering_result["clusters"][str(i)]
+            themes_str = ", ".join(cluster["themes"]) if cluster["themes"] else "No clear themes"
+            cluster_summaries.append(
+                f"Cluster {i}: {cluster['size']} items ({cluster['percentage']:.1f}%), Themes: {themes_str}"
+            )
+        
+        cluster_summary = "\n".join(cluster_summaries)
+        result["human_readable"] = f"""
+Clustering Summary:
+- Collection: {collection_name}
+- Total Points: {clustering_result["total_points"]}
+- Number of Clusters: {clustering_result["num_clusters"]}
+- Silhouette Score: {clustering_result.get("silhouette_score", "N/A")}
+
+Clusters:
+{cluster_summary}
+        """.strip()
+        
+        return json.dumps(result, indent=2)
     
     except Exception as e:
         return json.dumps({
