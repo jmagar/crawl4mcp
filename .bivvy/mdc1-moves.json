@@ -12,12 +12,12 @@
       "details": "Implement tool to monitor collection size, point count, and memory usage"
     },
     {
-      "status": "climbing",
+      "status": "done",
       "description": "Add item-to-item recommendations tool",
       "details": "Implement tool to find similar items based on vector similarity using Qdrant recommendation API"
     },
     {
-      "status": "todo",
+      "status": "climbing",
       "description": "Add vector clustering tool",
       "details": "Implement tool to group similar vectors and identify data patterns"
     },
