@@ -15,6 +15,11 @@
       "status": "done",
       "description": "Update environment variables",
       "details": "Add visualization-related environment variables to .env.example"
+    },
+    {
+      "status": "done",
+      "description": "Install dependencies",
+      "details": "Install scikit-learn, plotly, nltk and other dependencies with uv pip install"
     }
   ]
 } 
