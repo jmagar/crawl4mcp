@@ -1,23 +1,33 @@
-# Current Task: System Stabilization, Qdrant Warning Investigation & Feature Exploration
+# Current Task: New Analytical Features and Visualization Capabilities
 
 ## What we're working on now
-- Confirming the stability and performance of the Qdrant/TEI-based embedding and RAG system.
-- Investigating the Qdrant client parsing warnings that occur at server startup.
-- Considering and discussing potential new features to enhance the server's capabilities.
+- Adding optional visualization dependencies and ensuring correct installation
+- Testing and validating the new analytical functions
+- Creating helper functions to standardize Qdrant operations across different tools
+- Resolving dependency issues and linting warnings
 
 ## Recent changes
-- **Completed Migration:** Successfully migrated the vector database from Supabase to Qdrant.
-- **Switched Embedding Source:** Changed from OpenAI API embeddings to a self-hosted TEI server providing `BAAI/bge-large-en-v1.5` embeddings.
-- **Configuration Updates:** `pyproject.toml`, `.env` file, and `docker-compose.yml` updated for Qdrant and TEI.
-- **Code Refactoring:** `src/utils.py` and `src/crawl4ai_mcp.py` were significantly refactored to use Qdrant and the TEI server, adopting asynchronous patterns.
-- **Troubleshooting - Payload Errors:** Resolved "413 Payload Too Large" errors from the TEI server by:
-    - Disabling the OpenAI-based contextual summarization feature.
-    - Adjusting `smart_chunk_markdown` size, currently set to 750 characters.
-- **Troubleshooting - MCP Server Error:** Addressed a `RuntimeError: Received request before initialization was complete` by ensuring sufficient server startup time before client interaction.
+- **Completed "mdc1" Bivvy Climb:** Successfully implemented several new tools for enhancing Qdrant integration:
+  - Added hybrid search tool combining vector similarity with keyword filtering
+  - Added collection statistics dashboard for monitoring database metrics
+  - Added item-to-item recommendations for finding similar content
+  - Added vector clustering for pattern discovery and visualization
+  - Added helper functions for standardized filtering, result formatting, and error handling
+  
+- **Added Visualization Dependencies (mdc2):**
+  - Added scikit-learn, plotly, numpy, and nltk as optional dependencies in the `visualization` group
+  - Updated documentation to explain installation options and new capabilities
+  - Added environment variables for visualization settings
+  - Installed dependencies using UV package manager
+
+- **Code Organization:**
+  - Created reusable helper functions (`create_qdrant_filter`, `format_search_result`, etc.)
+  - Refactored existing functions to use the new helpers for consistency
+  - Improved error handling with standardized patterns
 
 ## Next steps
-1.  **Address Qdrant Client Warnings:** Determine the cause of the Pydantic validation errors (`Error parsing server response for collection 'crawl4ai_mcp'`) during startup. This will likely involve checking Qdrant server and `qdrant-client` library versions for compatibility.
-2.  **Comprehensive Testing:** Perform broader testing with diverse websites and query types to ensure overall system robustness.
-3.  **Evaluate Chunking/Embedding Strategy:** Confirm that the 750-character chunking (without summaries) provides good RAG performance. Consider if client-side token counting or more sophisticated chunking would be beneficial if issues arise.
-4.  **Feature Prioritization & Implementation:** Based on discussion, select and implement any desired new features (e.g., proxy support, PDF/screenshot capture, refined progress tracking for crawls).
-5.  **Memory Bank Review:** Ensure all Memory Bank documents are fully up-to-date and accurate post-migration. 
+1. **Test New Features:** Conduct comprehensive testing of the hybrid search, clustering, and recommendation tools.
+2. **Enhance Visualization:** Consider adding more visualization options for the clustering results.
+3. **User Documentation:** Create end-user documentation for the new analytical capabilities.
+4. **Performance Optimization:** Profile the performance of clustering and visualization with large datasets.
+5. **Consider Additional Features:** Based on user feedback, identify and implement further enhancements to the analytical capabilities. 

@@ -3,6 +3,10 @@
 ## Technologies used
 - **Python 3.12+**: Core programming language for the MCP server.
 - **FastMCP**: Framework used for building the Model Context Protocol server.
+  - **API Note**: The server uses FastMCP with specific transport methods. The available methods include:
+    - `run()`: Synchronous method for running the server
+    - `run_sse_async()`: Asynchronous method specifically for SSE transport
+    - Note: `run_async()` method mentioned in newer documentation is not available in the current version
 - **Crawl4AI**: Primary library for web crawling, page processing, and Markdown conversion.
 - **Text Embeddings Inference (TEI) Server**: Used to serve the `BAAI/bge-large-en-v1.5` model.
     - **Model:** `BAAI/bge-large-en-v1.5` (1024 dimensions) for generating text embeddings.
