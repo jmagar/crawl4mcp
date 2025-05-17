@@ -12,6 +12,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from qdrant_client.http.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue, MatchText
 from qdrant_client.http.exceptions import ResponseHandlingException
+from datetime import datetime
 
 # Attempt to import OpenAI and initialize if API key is present (for summarization)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -641,7 +642,8 @@ async def get_available_sources(client: QdrantClient, collection_name: str) -> L
         return []
 
 async def get_collection_stats(
-    client: QdrantClient, 
+    client: QdrantClient = None, 
+    qdrant_client: QdrantClient = None,
     collection_name: Optional[str] = None,
     include_segments: bool = False
 ) -> Dict[str, Any]:
@@ -649,7 +651,8 @@ async def get_collection_stats(
     Get statistics about a Qdrant collection or all collections.
     
     Args:
-        client: QdrantClient instance
+        client: QdrantClient instance (deprecated, use qdrant_client instead)
+        qdrant_client: QdrantClient instance
         collection_name: Optional name of the collection to query 
                         (if None, stats for all collections are returned)
         include_segments: Whether to include segment-level details
@@ -657,6 +660,11 @@ async def get_collection_stats(
     Returns:
         Dictionary containing collection statistics
     """
+    # Use whichever client was provided (prefer qdrant_client if both are given)
+    actual_client = qdrant_client if qdrant_client is not None else client
+    if actual_client is None:
+        raise ValueError("Either client or qdrant_client must be provided")
+        
     try:
         # Get collections info
         collections_info = []
@@ -666,7 +674,7 @@ async def get_collection_stats(
         if collection_name is None:
             try:
                 # Get all collections
-                all_collections = client.get_collections()
+                all_collections = actual_client.get_collections()
                 all_collection_names = [coll.name for coll in all_collections.collections]
             except Exception as e:
                 print(f"Error getting all collections: {e}")
@@ -681,14 +689,40 @@ async def get_collection_stats(
         for coll_name in all_collection_names:
             try:
                 # Get collection info
-                collection_info = client.get_collection(coll_name)
+                collection_info = actual_client.get_collection(coll_name)
                 
+                # Extract vector configuration details
+                vector_config = {}
+                if hasattr(collection_info.config.params, 'vectors'):
+                    if hasattr(collection_info.config.params.vectors, 'size'):
+                        # Single vector configuration
+                        vector_config = {
+                            "size": collection_info.config.params.vectors.size,
+                            "distance": collection_info.config.params.vectors.distance,
+                            "single_vector": True
+                        }
+                    else:
+                        # Multiple named vectors configuration
+                        vector_config = {
+                            "multiple_vectors": True,
+                            "vectors": {}
+                        }
+                        for name, config in collection_info.config.params.vectors.__dict__.items():
+                            if name.startswith('_'):
+                                continue
+                            vector_config["vectors"][name] = {
+                                "size": config.size if hasattr(config, 'size') else None,
+                                "distance": config.distance if hasattr(config, 'distance') else None
+                            }
+                            
                 # Get collection cluster info (shard stats, etc.)
                 try:
-                    cluster_info = client.collection_cluster_info(coll_name)
+                    cluster_info = actual_client.collection_cluster_info(coll_name)
                     cluster_data = {
                         "peer_count": len(cluster_info.peer_id_to_shard_count) if hasattr(cluster_info, 'peer_id_to_shard_count') else 0,
                         "shard_count": sum(cluster_info.peer_id_to_shard_count.values()) if hasattr(cluster_info, 'peer_id_to_shard_count') else 0,
+                        "replicas": cluster_info.replicas if hasattr(cluster_info, 'replicas') else None,
+                        "shard_distribution": cluster_info.peer_id_to_shard_count if hasattr(cluster_info, 'peer_id_to_shard_count') else None
                     }
                 except Exception as e:
                     # Cluster info may not be available in single-node setups
@@ -698,54 +732,123 @@ async def get_collection_stats(
                         "note": "Cluster info unavailable or running in single-node mode"
                     }
                 
-                # Get collection telemetry
+                # Get collection telemetry for performance insights
                 try:
-                    telemetry = client.get_collection_telemetry(coll_name)
-                    telemetry_data = {
-                        "api_call_distributions": telemetry.api_call_distribution,
-                        "latency_distributions": telemetry.latency_percentiles
-                    } if telemetry else {}
+                    telemetry = actual_client.get_collection_telemetry(coll_name)
+                    telemetry_data = {}
+                    
+                    if telemetry:
+                        if hasattr(telemetry, 'api_call_distribution'):
+                            telemetry_data["api_calls"] = {
+                                "total": sum(telemetry.api_call_distribution.values()) if telemetry.api_call_distribution else 0,
+                                "distribution": telemetry.api_call_distribution
+                            }
+                        
+                        if hasattr(telemetry, 'latency_percentiles'):
+                            telemetry_data["latencies"] = {
+                                "search": {
+                                    "p99": telemetry.latency_percentiles.get("search", {}).get("p99", None),
+                                    "p95": telemetry.latency_percentiles.get("search", {}).get("p95", None),
+                                    "p50": telemetry.latency_percentiles.get("search", {}).get("p50", None)
+                                },
+                                "update": {
+                                    "p99": telemetry.latency_percentiles.get("update", {}).get("p99", None),
+                                    "p95": telemetry.latency_percentiles.get("update", {}).get("p95", None),
+                                    "p50": telemetry.latency_percentiles.get("update", {}).get("p50", None)
+                                }
+                            }
                 except Exception as e:
                     telemetry_data = {
-                        "note": "Telemetry data unavailable"
+                        "note": f"Telemetry data unavailable: {str(e)}"
+                    }
+                
+                # Get index and optimization details
+                index_data = {}
+                if hasattr(collection_info.config, 'hnsw_config'):
+                    hnsw_config = collection_info.config.hnsw_config
+                    index_data["hnsw"] = {
+                        "m": hnsw_config.m if hasattr(hnsw_config, 'm') else None,
+                        "ef_construct": hnsw_config.ef_construct if hasattr(hnsw_config, 'ef_construct') else None,
+                        "full_scan_threshold": hnsw_config.full_scan_threshold if hasattr(hnsw_config, 'full_scan_threshold') else None,
+                        "max_indexing_threads": hnsw_config.max_indexing_threads if hasattr(hnsw_config, 'max_indexing_threads') else None
+                    }
+                
+                if hasattr(collection_info.config, 'optimizers_config'):
+                    opt_config = collection_info.config.optimizers_config
+                    index_data["optimizers"] = {
+                        "deleted_threshold": opt_config.deleted_threshold if hasattr(opt_config, 'deleted_threshold') else None,
+                        "vacuum_min_vector_number": opt_config.vacuum_min_vector_number if hasattr(opt_config, 'vacuum_min_vector_number') else None,
+                        "default_segment_number": opt_config.default_segment_number if hasattr(opt_config, 'default_segment_number') else None,
+                        "max_segment_size": opt_config.max_segment_size if hasattr(opt_config, 'max_segment_size') else None
                     }
                 
                 # Get segment info if requested
                 segments_data = {}
                 if include_segments:
                     try:
-                        segments = client.get_collection_shards(coll_name)
-                        segments_data = {
-                            "segments": segments.shards
-                        } if segments else {}
+                        segments = actual_client.get_collection_shards(coll_name)
+                        if segments and hasattr(segments, 'shards'):
+                            segments_data["shards"] = []
+                            for shard in segments.shards:
+                                shard_data = {
+                                    "shard_id": shard.shard_id if hasattr(shard, 'shard_id') else None,
+                                    "points_count": shard.points_count if hasattr(shard, 'points_count') else None,
+                                    "state": shard.state if hasattr(shard, 'state') else None
+                                }
+                                segments_data["shards"].append(shard_data)
                     except Exception as e:
                         segments_data = {
                             "note": f"Segment data unavailable: {str(e)}"
                         }
                 
                 # Count points
-                count_result = client.count(
+                count_result = actual_client.count(
                     collection_name=coll_name,
                     exact=True
                 )
+                
+                # Get payload schema information
+                payload_schema = {}
+                try:
+                    # Try to fetch a sample point to analyze payload structure
+                    sample_points = actual_client.scroll(
+                        collection_name=coll_name,
+                        limit=1,
+                        with_payload=True,
+                        with_vectors=False
+                    )
+                    
+                    if sample_points and sample_points.points and len(sample_points.points) > 0:
+                        sample_payload = sample_points.points[0].payload
+                        if sample_payload:
+                            payload_schema = {
+                                "fields": list(sample_payload.keys()),
+                                "sample": {k: type(v).__name__ for k, v in sample_payload.items()}
+                            }
+                except Exception as e:
+                    payload_schema = {
+                        "note": f"Payload schema analysis unavailable: {str(e)}"
+                    }
                 
                 # Combine info
                 collection_data = {
                     "name": coll_name,
                     "status": collection_info.status,
                     "vectors_count": count_result.count,
-                    "vectors": collection_info.config.params.vectors,
-                    "hnsw_config": collection_info.config.hnsw_config._asdict() if hasattr(collection_info.config, 'hnsw_config') else {},
-                    "optimizers_config": collection_info.config.optimizers_config._asdict() if hasattr(collection_info.config, 'optimizers_config') else {},
-                    "replication_factor": collection_info.config.params.replication_factor if hasattr(collection_info.config.params, 'replication_factor') else 1,
-                    "write_consistency_factor": collection_info.config.params.write_consistency_factor if hasattr(collection_info.config.params, 'write_consistency_factor') else 1,
-                    "on_disk_payload": collection_info.config.params.on_disk_payload if hasattr(collection_info.config.params, 'on_disk_payload') else False,
+                    "vector_config": vector_config,
+                    "index_config": index_data,
+                    "payload_schema": payload_schema,
+                    "storage_config": {
+                        "replication_factor": collection_info.config.params.replication_factor if hasattr(collection_info.config.params, 'replication_factor') else 1,
+                        "write_consistency_factor": collection_info.config.params.write_consistency_factor if hasattr(collection_info.config.params, 'write_consistency_factor') else 1,
+                        "on_disk_payload": collection_info.config.params.on_disk_payload if hasattr(collection_info.config.params, 'on_disk_payload') else False,
+                    },
                     "cluster_info": cluster_data,
-                    "telemetry": telemetry_data,
+                    "performance": telemetry_data,
                 }
                 
                 # Add segments data if requested
-                if include_segments:
+                if include_segments and segments_data:
                     collection_data["segments"] = segments_data
                 
                 collections_info.append(collection_data)
@@ -761,14 +864,23 @@ async def get_collection_stats(
         # Calculate summary stats
         total_vectors = sum(coll_info.get("vectors_count", 0) for coll_info in collections_info if "vectors_count" in coll_info)
         
-        # Return formatted stats
-        return {
-            "success": True,
-            "timestamp": str(uuid.uuid4()),  # Use as a unique ID for this stats snapshot
-            "total_collections": len(collections_info),
-            "total_vectors": total_vectors,
-            "collections": collections_info
-        }
+        # Return single collection or all collections
+        if collection_name is not None and len(collections_info) == 1:
+            # Return information for a single collection
+            return {
+                "success": True,
+                "timestamp": datetime.now().isoformat(),
+                "collection": collections_info[0]
+            }
+        else:
+            # Return information for all collections
+            return {
+                "success": True,
+                "timestamp": datetime.now().isoformat(),
+                "total_collections": len(collections_info),
+                "total_vectors": total_vectors,
+                "collections": collections_info
+            }
         
     except Exception as e:
         print(f"Error getting collection stats: {e}")

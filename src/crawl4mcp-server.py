@@ -28,7 +28,15 @@ from utils import (
     ensure_qdrant_collection_async as async_ensure_collection_exists,
     store_embeddings,
     query_qdrant,
-    get_available_sources as get_available_sources_async
+    get_available_sources as get_available_sources_async,
+    get_collection_stats,
+    get_similar_items,
+    fetch_item_by_id,
+    find_similar_content,
+    perform_hybrid_search,
+    fetch_vectors_for_clustering,
+    perform_kmeans_clustering,
+    visualize_clusters
 )
 
 # Load environment variables from the project root .env file
@@ -94,11 +102,12 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
 
 # Initialize FastMCP server
 mcp = FastMCP(
-    "mcp-crawl4ai-rag",
+    "crawl4mcp",
     description="MCP server for RAG and web crawling with Crawl4AI",
     lifespan=crawl4ai_lifespan,
     host=os.getenv("HOST", "0.0.0.0"),
-    port=os.getenv("PORT", "8051")
+    port=os.getenv("PORT", "8051"),
+    timeout=1200
 )
 
 def is_sitemap(url: str) -> bool:
@@ -796,6 +805,288 @@ async def perform_hybrid_search(
         return json.dumps({
             "success": False,
             "query": query,
+            "error": str(e)
+        }, indent=2)
+
+@mcp.tool()
+async def get_collection_stats(
+    ctx: Context,
+    collection_name: str = None,
+    include_segments: bool = False
+) -> str:
+    """
+    Get statistics about a Qdrant collection or all collections.
+    
+    This tool returns detailed information about collections including vector counts,
+    configuration parameters, and optionally segment-level details.
+    
+    Args:
+        ctx: The MCP server provided context
+        collection_name: Optional name of specific collection to get stats for
+                        (if None, stats for all collections are returned)
+        include_segments: Whether to include segment-level details
+        
+    Returns:
+        JSON string with collection statistics
+    """
+    try:
+        # Get the Qdrant client from the context
+        qdrant_client = ctx.request_context.lifespan_context.qdrant_client
+        default_collection = ctx.request_context.lifespan_context.collection_name
+        
+        # Call the utils.py function with the parameter name 'qdrant_client' instead of 'client'
+        stats = await get_collection_stats(
+            qdrant_client=qdrant_client,
+            collection_name=collection_name,
+            include_segments=include_segments
+        )
+        
+        # Add default collection information
+        stats["default_collection"] = default_collection
+        
+        return json.dumps(stats, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e)
+        }, indent=2)
+
+@mcp.tool()
+async def get_similar_items(
+    ctx: Context,
+    item_id: str,
+    filter_source: str = None,
+    match_count: int = 5
+) -> str:
+    """
+    Find similar items based on vector similarity using Qdrant's recommendation API.
+    
+    This tool takes an item ID and finds other items with similar vector embeddings.
+    
+    Args:
+        ctx: The MCP server provided context
+        item_id: ID of the item to find recommendations for
+        filter_source: Optional source domain to filter results
+        match_count: Number of recommendations to return (default: 5)
+    
+    Returns:
+        JSON string with similar items
+    """
+    try:
+        # Get the Qdrant client from the context
+        qdrant_client = ctx.request_context.lifespan_context.qdrant_client
+        collection_name = ctx.request_context.lifespan_context.collection_name
+        
+        # Prepare filter if source is provided
+        filter_condition = {"source": filter_source} if filter_source else None
+        
+        # Call the implementation from utils.py
+        results = await get_similar_items(
+            client=qdrant_client,
+            collection_name=collection_name,
+            item_id=item_id,
+            filter_condition=filter_condition,
+            match_count=match_count
+        )
+        
+        return json.dumps({
+            "success": True,
+            "item_id": item_id,
+            "source_filter": filter_source,
+            "results": results,
+            "count": len(results)
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "item_id": item_id,
+            "error": str(e)
+        }, indent=2)
+
+@mcp.tool()
+async def fetch_item_by_id(
+    ctx: Context,
+    item_id: str
+) -> str:
+    """
+    Fetch a specific item by ID from a Qdrant collection.
+    
+    This tool retrieves the complete data for a specific item by its ID.
+    
+    Args:
+        ctx: The MCP server provided context
+        item_id: ID of the item to fetch
+    
+    Returns:
+        JSON string with the item data
+    """
+    try:
+        # Get the Qdrant client from the context
+        qdrant_client = ctx.request_context.lifespan_context.qdrant_client
+        collection_name = ctx.request_context.lifespan_context.collection_name
+        
+        # Call the implementation from utils.py
+        result = await fetch_item_by_id(
+            client=qdrant_client,
+            collection_name=collection_name,
+            item_id=item_id
+        )
+        
+        if result:
+            return json.dumps({
+                "success": True,
+                "item_id": item_id,
+                "item": result
+            }, indent=2)
+        else:
+            return json.dumps({
+                "success": False,
+                "item_id": item_id,
+                "error": "Item not found"
+            }, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "item_id": item_id,
+            "error": str(e)
+        }, indent=2)
+
+@mcp.tool()
+async def find_similar_content(
+    ctx: Context,
+    content_text: str,
+    filter_source: str = None,
+    match_count: int = 5
+) -> str:
+    """
+    Find similar content based on text, not an existing item ID.
+    
+    This tool takes a text sample and finds indexed content with similar vector embeddings.
+    
+    Args:
+        ctx: The MCP server provided context
+        content_text: Text content to find similar items for
+        filter_source: Optional source domain to filter results
+        match_count: Number of similar items to return (default: 5)
+    
+    Returns:
+        JSON string with similar content results
+    """
+    try:
+        # Get the Qdrant client from the context
+        qdrant_client = ctx.request_context.lifespan_context.qdrant_client
+        collection_name = ctx.request_context.lifespan_context.collection_name
+        
+        # Prepare filter if source is provided
+        filter_condition = {"source": filter_source} if filter_source else None
+        
+        # Call the implementation from utils.py
+        results = await find_similar_content(
+            client=qdrant_client,
+            collection_name=collection_name,
+            content_text=content_text,
+            filter_condition=filter_condition,
+            match_count=match_count
+        )
+        
+        return json.dumps({
+            "success": True,
+            "text_length": len(content_text),
+            "source_filter": filter_source,
+            "results": results,
+            "count": len(results)
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e)
+        }, indent=2)
+
+@mcp.tool()
+async def cluster_content(
+    ctx: Context,
+    source_filter: str = None,
+    num_clusters: int = 5,
+    sample_size: int = 1000,
+    include_visualization: bool = True
+) -> str:
+    """
+    Cluster stored content into semantically similar groups.
+    
+    This tool fetches vectors from Qdrant, performs K-means clustering, and returns
+    information about the clusters along with representative items from each cluster.
+    
+    Args:
+        ctx: The MCP server provided context
+        source_filter: Optional source domain to filter content
+        num_clusters: Number of clusters to create (default: 5)
+        sample_size: Maximum number of vectors to include in clustering (default: 1000)
+        include_visualization: Whether to include visualization data (default: True)
+    
+    Returns:
+        JSON string with clustering results
+    """
+    try:
+        # Get the Qdrant client from the context
+        qdrant_client = ctx.request_context.lifespan_context.qdrant_client
+        collection_name = ctx.request_context.lifespan_context.collection_name
+        
+        # Prepare filter condition
+        filter_condition = {"source": source_filter} if source_filter else None
+        
+        # Fetch vectors for clustering
+        vectors, payloads, ids = await fetch_vectors_for_clustering(
+            client=qdrant_client,
+            collection_name=collection_name,
+            filter_condition=filter_condition,
+            sample_size=sample_size
+        )
+        
+        if not vectors:
+            return json.dumps({
+                "success": False,
+                "error": "No vectors found for clustering"
+            }, indent=2)
+        
+        # Perform clustering
+        clustering_result = await perform_kmeans_clustering(
+            vectors=vectors,
+            payloads=payloads,
+            ids=ids,
+            num_clusters=min(num_clusters, len(vectors) // 2)  # Ensure reasonable cluster count
+        )
+        
+        # Generate visualization if requested
+        if include_visualization and clustering_result.get("success") and "num_clusters" in clustering_result:
+            # Extract cluster labels
+            cluster_labels = []
+            for idx, vector_id in enumerate(ids):
+                # Find which cluster this item belongs to
+                for cluster_num, cluster_data in clustering_result["clusters"].items():
+                    if any(item["id"] == vector_id for item in cluster_data.get("representative_items", [])):
+                        cluster_labels.append(int(cluster_num))
+                        break
+                else:
+                    # If not found in representatives, assign to largest cluster as fallback
+                    largest_cluster = max(
+                        clustering_result["clusters"].items(),
+                        key=lambda x: x[1]["size"]
+                    )[0]
+                    cluster_labels.append(int(largest_cluster))
+            
+            # Generate visualization
+            viz_data = await visualize_clusters(
+                vectors=vectors,
+                cluster_labels=cluster_labels
+            )
+            
+            if viz_data:
+                clustering_result["visualization"] = viz_data
+        
+        return json.dumps(clustering_result, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
             "error": str(e)
         }, indent=2)
 
