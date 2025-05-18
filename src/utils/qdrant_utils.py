@@ -224,13 +224,23 @@ async def store_embeddings(
     chunks: List[Dict[str, Any]],
     source_url: str,
     crawl_type: str,
-    batch_size: int = 32, # This is Qdrant upsert batch size
     query_for_contextual_embedding: Optional[str] = None
 ) -> Tuple[int, int]:
     """
     Store text chunks and their embeddings in Qdrant, handling contextual embeddings.
     Uses the global EMBEDDING_SERVER_BATCH_SIZE for batching requests to the embedding server.
+    Qdrant upsert batch size is controlled by QDRANT_UPSERT_BATCH_SIZE environment variable.
     """
+    # Get Qdrant upsert batch size from environment variable or use a default
+    try:
+        qdrant_upsert_batch_size = int(os.getenv("QDRANT_UPSERT_BATCH_SIZE", "64"))
+        if qdrant_upsert_batch_size <= 0:
+            print(f"Warning: QDRANT_UPSERT_BATCH_SIZE must be positive. Defaulting to 64.")
+            qdrant_upsert_batch_size = 64
+    except ValueError:
+        print(f"Warning: QDRANT_UPSERT_BATCH_SIZE is not a valid integer. Defaulting to 64.")
+        qdrant_upsert_batch_size = 64
+
     points_to_upsert = []
     successful_chunks = 0
     failed_chunks = 0
@@ -269,16 +279,14 @@ async def store_embeddings(
         payload = {
             "url": source_url,
             "text": embedded_text_payload, # Store the text that was embedded
-            # "original_text": text_content, # No longer needed if not summarizing
             "source": urlparse(source_url).netloc,
             "crawl_type": crawl_type,
             "char_count": len(text_content), # char_count of the original text
             "word_count": len(text_content.split()), # word_count of the original text
             "chunk_index": i + 1,
             "headers": chunk_data.get("headers", ""),
-            "contextual_embedding": False # Always false now
-            # Old logic for contextual_embedding:
-            # "contextual_embedding": bool(query_for_contextual_embedding and openai and SUMMARIZATION_MODEL_CHOICE and embedded_text_payload.startswith("Contextual Summary"))
+            "contextual_embedding": False, # Always false now
+            "crawl_timestamp": datetime.utcnow().isoformat() # Add timestamp
         }
 
         points_to_upsert.append(
@@ -290,7 +298,7 @@ async def store_embeddings(
         )
         successful_chunks += 1
 
-        if len(points_to_upsert) >= batch_size:
+        if len(points_to_upsert) >= qdrant_upsert_batch_size: # Use the configured batch size
             try:
                 # If this util is called from an async function, it will block.
                 # To make it truly async, use an async http library.
