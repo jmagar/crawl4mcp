@@ -104,6 +104,12 @@ venv.bak/
 # mkdocs documentation
 /site
 
+crawl-docs.md
+crawl-repos.md
+cline_docs
+.bivvy
+.cursor
+
 # mypy
 .mypy_cache/
 .dmypy.json

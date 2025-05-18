@@ -58,8 +58,13 @@ services:
       # Set OPENAI_API_KEY and SUMMARIZATION_MODEL_CHOICE in .env to enable summaries
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - SUMMARIZATION_MODEL_CHOICE=${SUMMARIZATION_MODEL_CHOICE:-}
-    # volumes:
-    #   - .:/app # Optional: Mount local code for development (see notes in Dockerfile)
+    volumes:
+      - .:/app # Mounts the current directory (containing src, etc.) to /app in the container
+    develop:
+      watch:
+        - action: rebuild
+          path: ./src
+          target: /app/src
     # networks:
     #   - qdrant-network
 
