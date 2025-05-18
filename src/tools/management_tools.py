@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from mcp.server.fastmcp import Context # MCP Context for tool arguments
-from fastmcp.error import ResourceError # Import ResourceError
+from mcp.server.fastmcp.exceptions import ResourceError # Correct import path
 
 # Import the centralized mcp instance
 from ..mcp_setup import mcp

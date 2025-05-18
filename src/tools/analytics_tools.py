@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 import os
 
 from mcp.server.fastmcp import Context # MCP Context for tool arguments
-from fastmcp.error import ToolError # Import ToolError
+from mcp.server.fastmcp.exceptions import ToolError # Correct import path
 
 # Import the centralized mcp instance
 from ..mcp_setup import mcp
