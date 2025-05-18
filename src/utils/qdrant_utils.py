@@ -6,6 +6,7 @@ import uuid
 from urllib.parse import urlparse
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
+import asyncio # Ensure asyncio is imported
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
@@ -291,7 +292,10 @@ async def store_embeddings(
 
         if len(points_to_upsert) >= batch_size:
             try:
-                client.upsert(collection_name=collection_name, points=points_to_upsert)
+                # If this util is called from an async function, it will block.
+                # To make it truly async, use an async http library.
+                # For simplicity in refactoring the existing synchronous logic:
+                await asyncio.to_thread(client.upsert, collection_name=collection_name, points=points_to_upsert)
                 print(f"Upserted {len(points_to_upsert)} points to '{collection_name}'.")
                 points_to_upsert = []
             except Exception as e:
@@ -303,7 +307,10 @@ async def store_embeddings(
 
     if points_to_upsert: # Upsert any remaining points
         try:
-            client.upsert(collection_name=collection_name, points=points_to_upsert)
+            # If this util is called from an async function, it will block.
+            # To make it truly async, use an async http library.
+            # For simplicity in refactoring the existing synchronous logic:
+            await asyncio.to_thread(client.upsert, collection_name=collection_name, points=points_to_upsert)
             print(f"Upserted remaining {len(points_to_upsert)} points to '{collection_name}'.")
         except Exception as e:
             print(f"Error upserting final batch to Qdrant: {e}")
@@ -332,7 +339,9 @@ async def query_qdrant(
     qdrant_filter = create_qdrant_filter(source_filter=source_filter)
 
     try:
-        search_result = client.search(
+        # client.search is synchronous
+        search_result = await asyncio.to_thread(
+            client.search,
             collection_name=collection_name,
             query_vector=query_embedding,
             query_filter=qdrant_filter,
@@ -410,7 +419,9 @@ async def perform_hybrid_search(
         # Perform hybrid search
         # If there's no keyword filter, perform standard vector search
         if not filter_text or not filter_text.strip():
-            search_result = client.search(
+            # client.search is synchronous
+            search_result = await asyncio.to_thread(
+                client.search,
                 collection_name=collection_name,
                 query_vector=query_embedding,
                 query_filter=qdrant_filter, # This would contain only source_filter if filter_text is empty
@@ -436,7 +447,9 @@ async def perform_hybrid_search(
         vector_filter = create_qdrant_filter(filter_condition=vector_filter_conditions)
         
         # First get vector search results
-        vector_results = client.search(
+        # client.search is synchronous
+        vector_results = await asyncio.to_thread(
+            client.search,
             collection_name=collection_name,
             query_vector=query_embedding,
             query_filter=vector_filter,
@@ -453,12 +466,15 @@ async def perform_hybrid_search(
         # Get text search results
         text_search_hits = []
         if text_filter:
-            text_search_hits, _ = client.scroll( # scroll returns a tuple (results, next_page_offset)
+            # client.scroll is synchronous
+            text_search_hits_response, _ = await asyncio.to_thread(
+                client.scroll, # scroll returns a tuple (results, next_page_offset)
                 collection_name=collection_name,
                 scroll_filter=text_filter, # scroll_filter instead of filter for scroll API
                 limit=match_count * 2, 
                 with_payload=True
-            )  
+            )
+            text_search_hits = text_search_hits_response
         
         # Combine results
         result_map = {}  # Map of ID to combined result
@@ -512,21 +528,23 @@ async def get_available_sources(client: QdrantClient, collection_name: str) -> L
         max_scroll_limit = 10000 # Safety limit to prevent excessive scrolling
 
         while processed_count < max_scroll_limit :
-            response, current_offset = client.scroll(
+            # client.scroll is synchronous
+            response_data, current_offset = await asyncio.to_thread(
+                client.scroll,
                 collection_name=collection_name, 
                 limit=1000, # Adjust batch size as needed
                 offset=next_page_offset,
                 with_payload=["source"],
                 with_vectors=False # No need for vectors here
             )
-            if not response: # No more points
+            if not response_data: # No more points
                 break
 
-            for hit in response:
+            for hit in response_data:
                 if hit.payload and "source" in hit.payload:
                     sources.add(hit.payload["source"])
             
-            processed_count += len(response)
+            processed_count += len(response_data)
 
             if current_offset is None: # End of scrolling
                 break
@@ -558,7 +576,8 @@ async def get_collection_stats(
     try:
         # Fetch cluster status (applies to the entire Qdrant instance)
         try:
-            cluster_status_info = qdrant_client.cluster_status()
+            # qdrant_client.cluster_status is synchronous
+            cluster_status_info = await asyncio.to_thread(qdrant_client.cluster_status)
             results["cluster_status"] = {
                 "status": str(cluster_status_info.status),
                 "peer_id": cluster_status_info.peer_id,
@@ -587,7 +606,8 @@ async def get_collection_stats(
             results["cluster_status"] = {"error": f"Could not retrieve cluster status: {str(e_cluster)}"}
 
         if collection_name:
-            collection_info = qdrant_client.get_collection(collection_name=collection_name)
+            # qdrant_client.get_collection is synchronous
+            collection_info = await asyncio.to_thread(qdrant_client.get_collection, collection_name=collection_name)
             
             vector_size = None
             distance_metric = None
@@ -679,7 +699,8 @@ async def get_collection_stats(
                 results["collection"]["segments"] = "Segments info not implemented in this version of get_collection_stats"
         else:
             # If no collection_name, list all collections
-            collections_response = qdrant_client.get_collections()
+            # qdrant_client.get_collections is synchronous
+            collections_response = await asyncio.to_thread(qdrant_client.get_collections)
             collections_list = collections_response.collections
             results["collections_overview"] = []
             for col_desc in collections_list:
@@ -687,7 +708,8 @@ async def get_collection_stats(
                 # This could be slow if there are many collections.
                 # Consider a "light" version if this becomes an issue.
                 try:
-                    detailed_info = qdrant_client.get_collection(collection_name=col_desc.name)
+                    # qdrant_client.get_collection is synchronous
+                    detailed_info = await asyncio.to_thread(qdrant_client.get_collection, collection_name=col_desc.name)
                     
                     # Simplified vector info for overview
                     col_vector_size = "N/A"
@@ -757,7 +779,9 @@ async def get_similar_items(
         query_filter = create_qdrant_filter(filter_condition=filter_condition)
         
         # Find similar items using the recommend API
-        recommend_result = client.recommend(
+        # client.recommend is synchronous
+        recommend_result = await asyncio.to_thread(
+            client.recommend,
             collection_name=collection_name,
             positive=[item_id],  # ID of the item we want recommendations for
             negative=[],  # Optional IDs to use as negative examples
@@ -797,7 +821,9 @@ async def fetch_item_by_id(
     try:
         # Retrieve the point by ID
         # Qdrant client's retrieve method expects a list of IDs
-        points_response = client.retrieve(
+        # client.retrieve is synchronous
+        points_response = await asyncio.to_thread(
+            client.retrieve,
             collection_name=collection_name,
             ids=[item_id],
             with_payload=True,
@@ -864,7 +890,9 @@ async def find_similar_content(
         query_filter = create_qdrant_filter(filter_condition=filter_condition)
         
         # Search for similar content
-        search_result = client.search(
+        # client.search is synchronous
+        search_result = await asyncio.to_thread(
+            client.search,
             collection_name=collection_name,
             query_vector=query_embedding,
             query_filter=query_filter,

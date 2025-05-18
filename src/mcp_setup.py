@@ -14,7 +14,7 @@ from qdrant_client import QdrantClient
 from crawl4ai import AsyncWebCrawler, BrowserConfig
 
 # Assuming these utilities are needed for lifespan setup
-from .utils.qdrant_utils import get_qdrant_client, ensure_qdrant_collection_async
+from .utils.qdrant_utils import get_qdrant_client #, ensure_qdrant_collection_async # ensure_qdrant_collection_async is defined below
 
 # Load environment variables from the project root .env file
 # This should run when this module is imported to set up env vars early
@@ -62,8 +62,27 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
     vector_dim = int(os.getenv("VECTOR_DIM", "1024"))
     
     # Ensure collection exists
-    await ensure_qdrant_collection_async(qdrant_client, collection_name, vector_dim) # From qdrant_utils
-    
+    # await ensure_qdrant_collection_async(qdrant_client, collection_name, vector_dim) # From qdrant_utils
+    try:
+        # client.get_collection is synchronous
+        await asyncio.to_thread(qdrant_client.get_collection, collection_name=collection_name)
+        print(f"Collection '{collection_name}' already exists.")
+    except Exception as e:
+        # Assuming the error means the collection does not exist.
+        # A more robust check for specific "Not Found" error types might be needed depending on qdrant_client version.
+        print(f"Collection '{collection_name}' not found or error checking: {e}. Attempting to create it.")
+        try:
+            # client.create_collection is synchronous
+            await asyncio.to_thread(
+                qdrant_client.create_collection,
+                collection_name=collection_name,
+                vectors_config=models.VectorParams(size=vector_dim, distance=models.Distance.COSINE) # Ensure models is imported if not already
+            )
+            print(f"Collection '{collection_name}' created with vector_dim={vector_dim}.")
+        except Exception as create_e:
+            print(f"Failed to create collection '{collection_name}': {create_e}")
+            raise # Re-raise the creation error if it fails
+
     try:
         print("Crawl4AI Lifespan started, crawler and Qdrant client initialized.")
         yield Crawl4AIContext(
@@ -86,6 +105,9 @@ mcp = FastMCP(
     port=int(os.getenv("PORT", "8051")), # Ensure port is int
     timeout=int(os.getenv("MCP_TIMEOUT", "1200")) # Ensure timeout is int
 )
+
+# Need to import models for VectorParams
+from qdrant_client.http import models
 
 server_name_for_print = os.getenv("MCP_SERVER_NAME", "crawl4mcp")
 host_for_print = os.getenv("HOST", "0.0.0.0")
