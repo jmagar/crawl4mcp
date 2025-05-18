@@ -2,10 +2,12 @@
 MCP Tools for Qdrant collection management and information retrieval.
 """
 import json
-from typing import Optional
+from typing import Optional, List
 import os
+from pathlib import Path
 
 from mcp.server.fastmcp import Context # MCP Context for tool arguments
+from fastmcp.error import ResourceError # Import ResourceError
 
 # Import the centralized mcp instance
 from ..mcp_setup import mcp
@@ -15,11 +17,17 @@ from ..utils.qdrant_utils import (
     get_collection_stats as get_collection_stats_util,   # Alias
     get_qdrant_client # Added import
 )
+# Import logging utilities
+from ..utils.logging_utils import get_logger
 
-@mcp.tool()
-async def get_available_sources(ctx: Context) -> str:
+# Initialize logger
+logger = get_logger(__name__)
+
+@mcp.resource()
+async def get_available_sources(ctx: Context) -> List[str]:
     """
     Get all available sources based on unique source metadata values.
+    Accessible via resource URI: resource://get_available_sources
     """
     qdrant_client_instance = None
     collection_name_str = None
@@ -31,35 +39,42 @@ async def get_available_sources(ctx: Context) -> str:
         else:
             raise AttributeError("request_context not available for get_available_sources")
     except (AttributeError, ValueError) as e:
-        print(f"Context access failed for get_available_sources ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
+        logger.warning(f"Context access failed for get_available_sources ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
         try:
             qdrant_client_instance = get_qdrant_client()
             collection_name_str = os.getenv("QDRANT_COLLECTION")
             if not collection_name_str:
-                raise ValueError("QDRANT_COLLECTION environment variable must be set when context is not available.")
+                raise ResourceError(message="QDRANT_COLLECTION environment variable must be set when context is not available.", code="CONFIG_ERROR")
         except Exception as e_init:
-            return json.dumps({"success": False, "error": f"Failed to initialize Qdrant: {str(e_init)}"}, indent=2)
+            logger.error(f"Failed to initialize Qdrant: {e_init}")
+            raise ResourceError(message=f"Failed to initialize Qdrant: {str(e_init)}", code="INITIALIZATION_ERROR", details={"original_exception": str(e_init)})
 
     if not all([qdrant_client_instance, collection_name_str]):
-        return json.dumps({"success": False, "error": "Qdrant client or collection name missing for get_available_sources."}, indent=2)
+        logger.error("Qdrant client or collection name missing for get_available_sources.")
+        raise ResourceError(message="Qdrant client or collection name missing for get_available_sources.", code="MISSING_DEPENDENCY")
 
     try:
+        logger.debug(f"Fetching available sources from collection '{collection_name_str}'")
         sources = await get_available_sources_util(
             client=qdrant_client_instance, 
             collection_name=collection_name_str
         )
-        return json.dumps({"success": True, "sources": sources, "count": len(sources)}, indent=2)
+        logger.info(f"Found {len(sources)} sources")
+        return sources
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, indent=2)
+        logger.error(f"Error in get_available_sources: {e}")
+        raise ResourceError(message=f"Error getting available sources: {str(e)}", code="QDRANT_ERROR", details={"original_exception": str(e)})
 
-@mcp.tool()
+@mcp.resource()
 async def get_collection_stats(
     ctx: Context,
     collection_name: Optional[str] = None,
     include_segments: bool = False
-) -> str:
+) -> dict:
     """
     Get statistics about a Qdrant collection or all collections.
+    Accessible via resource URI: resource://get_collection_stats (for default)
+    or resource://get_collection_stats/{collection_name}?include_segments={true|false}
     """
     qdrant_client_instance = None
     default_collection_name_from_context_or_env = None
@@ -73,16 +88,18 @@ async def get_collection_stats(
             raise AttributeError("request_context not available for get_collection_stats") # Force fallback
     except (AttributeError, ValueError) as e: # Catch ValueError here too
         # Context is not available or not structured as expected (e.g., direct call with ctx={})
-        print(f"Context access failed for get_collection_stats ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
+        logger.warning(f"Context access failed for get_collection_stats ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
         try:
             qdrant_client_instance = get_qdrant_client() # From qdrant_utils
             default_collection_name_from_context_or_env = os.getenv("QDRANT_COLLECTION") # Changed from QDRANT_COLLECTION_NAME
         except Exception as e_client:
-            return json.dumps({"success": False, "error": f"Failed to initialize Qdrant client: {str(e_client)}"}, indent=2)
+            logger.error(f"Failed to initialize Qdrant client: {e_client}")
+            raise ResourceError(message=f"Failed to initialize Qdrant client: {str(e_client)}", code="INITIALIZATION_ERROR", details={"original_exception": str(e_client)})
 
     if not qdrant_client_instance:
         # This case should ideally be covered by the try-except block above
-        return json.dumps({"success": False, "error": "Qdrant client could not be initialized."}, indent=2)
+        logger.error("Qdrant client could not be initialized.")
+        raise ResourceError(message="Qdrant client could not be initialized.", code="INITIALIZATION_ERROR")
 
     # Determine the target collection name for the query
     # If collection_name parameter is provided to the tool, it takes precedence.
@@ -91,6 +108,7 @@ async def get_collection_stats(
     target_collection_name_for_query = collection_name if collection_name is not None else default_collection_name_from_context_or_env
     
     try:
+        logger.debug(f"Fetching collection stats for '{target_collection_name_for_query if target_collection_name_for_query else 'all collections'}'")
         stats = await get_collection_stats_util(
             qdrant_client=qdrant_client_instance, 
             collection_name=target_collection_name_for_query,
@@ -117,10 +135,13 @@ async def get_collection_stats(
             
         elif not (isinstance(stats, dict) and stats.get("success", False)):
             error_message = stats.get("error") if isinstance(stats, dict) else "Failed to get valid stats object from utility."
-            return json.dumps({"success": False, "error": error_message}, indent=2)
+            logger.error(f"Error from get_collection_stats_util: {error_message}")
+            raise ResourceError(message=f"Error from get_collection_stats_util: {error_message}", code="STATS_ERROR", details={"utility_error": error_message})
 
-        return json.dumps(stats, indent=2)
+        logger.info(f"Successfully retrieved collection stats")
+        return stats
     except Exception as e:
-        return json.dumps({"success": False, "error": f"Error in get_collection_stats tool: {str(e)}"}, indent=2)
+        logger.error(f"Error in get_collection_stats tool: {e}")
+        raise ResourceError(message=f"Error in get_collection_stats: {str(e)}", code="PROCESSING_ERROR", details={"original_exception": str(e)})
 
 # Ensure the file ends with a newline for linters 

@@ -19,19 +19,13 @@ from qdrant_client.http.models import (
 )
 from qdrant_client.http.exceptions import ResponseHandlingException
 
-# Placeholder imports - these will be actual functions from embedding_utils.py
-# from .embedding_utils import get_embedding, create_embeddings_batch, generate_contextual_embedding
-# For now, to avoid import errors during intermediate steps, we might need to define them as dummy functions
-# if these utils are called by functions within this file directly during a partial refactor.
-# However, the plan is to move functions that call these, so direct calls within this file might be minimal
-# until the other util files are also created.
+# Import logging utilities
+from .logging_utils import get_logger
 
-# Let's assume for now that functions from embedding_utils will be imported correctly later.
-# If store_embeddings, query_qdrant etc. are moved here AND they call get_embedding etc.
-# which are NOT YET in embedding_utils.py, it could be an issue.
-# The best approach is to ensure that when a function is moved, its dependencies are also moved or correctly stubbed/imported.
+# Initialize logger
+logger = get_logger(__name__)
 
-# For now, let's add actual placeholder imports that will be resolved later.
+# Import embedding functions
 from .embedding_utils import get_embedding, create_embeddings_batch, generate_contextual_embedding
 
 
@@ -46,12 +40,15 @@ def get_qdrant_client() -> QdrantClient:
     api_key = os.getenv("QDRANT_API_KEY")
     
     if not url:
+        logger.error("QDRANT_URL must be set in the environment variables.")
         raise ValueError("QDRANT_URL must be set in the environment variables.")
     
     # Create client with or without API key, depending on what's provided
     if api_key:
+        logger.debug(f"Creating Qdrant client with URL {url} and API key")
         return QdrantClient(url=url, api_key=api_key)
     else:
+        logger.debug(f"Creating Qdrant client with URL {url} (no API key)")
         return QdrantClient(url=url)
 
 async def ensure_qdrant_collection_async(client: QdrantClient, collection_name: str, vector_dim: int):
@@ -63,12 +60,12 @@ async def ensure_qdrant_collection_async(client: QdrantClient, collection_name: 
         # Try to get collection info. This might raise ResponseHandlingException if the
         # client has trouble parsing the server's response (e.g., Pydantic validation error).
         client.get_collection(collection_name=collection_name)
-        print(f"Collection '{collection_name}' already exists or client successfully parsed its details.")
+        logger.info(f"Collection '{collection_name}' already exists or client successfully parsed its details.")
     except ResponseHandlingException as rHE:
         # This is the Pydantic validation error.
         # Assume the collection *exists*, but the client can't parse the response.
         # DO NOT try to create it, as that would likely lead to a 409 Conflict.
-        print(f"Error parsing server response for collection '{collection_name}': {rHE}. Assuming collection exists but details are unparsable by this client version.")
+        logger.warning(f"Error parsing server response for collection '{collection_name}': {rHE}. Assuming collection exists but details are unparsable by this client version.")
         # We pass here, effectively treating the collection as existing.
         pass
     except Exception as e:
@@ -76,17 +73,17 @@ async def ensure_qdrant_collection_async(client: QdrantClient, collection_name: 
         # or network issues), assume it might not exist and try to create it.
         # Qdrant client versions vary in how they report "Not Found".
         # A more robust check for a 404 status code from 'e' might be needed if this proves problematic.
-        print(f"An unexpected error or 'Not Found' occurred while checking collection '{collection_name}': {e}. Attempting to create it.")
+        logger.warning(f"An unexpected error or 'Not Found' occurred while checking collection '{collection_name}': {e}. Attempting to create it.")
         try:
             client.create_collection(
                 collection_name=collection_name,
                 vectors_config=models.VectorParams(size=vector_dim, distance=models.Distance.COSINE)
             )
-            print(f"Collection '{collection_name}' created with vector_dim={vector_dim}.")
+            logger.info(f"Collection '{collection_name}' created with vector_dim={vector_dim}.")
         except Exception as final_create_e:
             # If create_collection also fails (e.g., it was a 409 because it did exist,
             # or another network issue), then we log and re-raise.
-            print(f"Attempt to create collection '{collection_name}' also failed: {final_create_e}")
+            logger.error(f"Attempt to create collection '{collection_name}' also failed: {final_create_e}")
             raise
 
 def create_qdrant_filter(source_filter: Optional[str] = None, filter_condition: Optional[Dict[str, Any]] = None) -> Optional[models.Filter]:
@@ -215,7 +212,7 @@ def handle_search_error(error: Exception, operation: str, query: str = "") -> Li
         Empty list (standardized error result)
     """
     query_info = f" for '{query}'" if query else ""
-    print(f"Error {operation}{query_info}: {error}")
+    logger.error(f"Error {operation}{query_info}: {error}")
     return []
 
 async def store_embeddings(
@@ -235,10 +232,10 @@ async def store_embeddings(
     try:
         qdrant_upsert_batch_size = int(os.getenv("QDRANT_UPSERT_BATCH_SIZE", "64"))
         if qdrant_upsert_batch_size <= 0:
-            print(f"Warning: QDRANT_UPSERT_BATCH_SIZE must be positive. Defaulting to 64.")
+            logger.warning(f"QDRANT_UPSERT_BATCH_SIZE must be positive. Defaulting to 64.")
             qdrant_upsert_batch_size = 64
     except ValueError:
-        print(f"Warning: QDRANT_UPSERT_BATCH_SIZE is not a valid integer. Defaulting to 64.")
+        logger.warning(f"QDRANT_UPSERT_BATCH_SIZE is not a valid integer. Defaulting to 64.")
         qdrant_upsert_batch_size = 64
 
     points_to_upsert = []
@@ -269,7 +266,7 @@ async def store_embeddings(
         embedding = all_embeddings[i]
 
         if not embedding:  # Skip if embedding failed for this chunk
-            print(f"Skipping chunk {i+1} from {source_url} due to embedding failure.")
+            logger.warning(f"Skipping chunk {i+1} from {source_url} due to embedding failure.")
             failed_chunks += 1
             continue
 
@@ -304,10 +301,10 @@ async def store_embeddings(
                 # To make it truly async, use an async http library.
                 # For simplicity in refactoring the existing synchronous logic:
                 await asyncio.to_thread(client.upsert, collection_name=collection_name, points=points_to_upsert)
-                print(f"Upserted {len(points_to_upsert)} points to '{collection_name}'.")
+                logger.info(f"Upserted {len(points_to_upsert)} points to '{collection_name}'.")
                 points_to_upsert = []
             except Exception as e:
-                print(f"Error upserting batch to Qdrant: {e}")
+                logger.error(f"Error upserting batch to Qdrant: {e}")
                 # Decide how to handle batch failures, e.g., mark all in batch as failed
                 failed_chunks += len(points_to_upsert)
                 successful_chunks -= len(points_to_upsert)
@@ -319,9 +316,9 @@ async def store_embeddings(
             # To make it truly async, use an async http library.
             # For simplicity in refactoring the existing synchronous logic:
             await asyncio.to_thread(client.upsert, collection_name=collection_name, points=points_to_upsert)
-            print(f"Upserted remaining {len(points_to_upsert)} points to '{collection_name}'.")
+            logger.info(f"Upserted remaining {len(points_to_upsert)} points to '{collection_name}'.")
         except Exception as e:
-            print(f"Error upserting final batch to Qdrant: {e}")
+            logger.error(f"Error upserting final batch to Qdrant: {e}")
             failed_chunks += len(points_to_upsert)
             successful_chunks -= len(points_to_upsert)
 
@@ -337,16 +334,21 @@ async def query_qdrant(
     """
     Query Qdrant for relevant documents.
     """
+    logger.debug(f"Generating embedding for query: '{query_text}'")
     # get_embedding will be imported from embedding_utils
     query_embedding = await get_embedding(query_text)
     if not query_embedding:
-        print(f"Could not generate embedding for query: '{query_text}'. Returning empty list.")
+        logger.error(f"Could not generate embedding for query: '{query_text}'. Returning empty list.")
         return []
 
     # Use the new helper function to create a filter from source_filter
     qdrant_filter = create_qdrant_filter(source_filter=source_filter)
+    
+    if source_filter:
+        logger.debug(f"Searching with source filter: {source_filter}")
 
     try:
+        logger.debug(f"Executing Qdrant search in collection '{collection_name}' with match_count={match_count}")
         # client.search is synchronous
         search_result = await asyncio.to_thread(
             client.search,
@@ -362,6 +364,10 @@ async def query_qdrant(
         for hit in search_result:
             result = format_search_result(hit, search_type="semantic")
             results.append(result)
+        
+        logger.info(f"Query completed with {len(results)} results")
+        if results:
+            logger.debug(f"Top result score: {results[0].get('similarity', 'N/A')}")
         return results
     except Exception as e:
         # Use the new helper function for error handling
@@ -421,7 +427,7 @@ async def perform_hybrid_search(
         # get_embedding will be imported from embedding_utils
         query_embedding = await get_embedding(query_text)
         if not query_embedding:
-            print(f"Could not generate embedding for hybrid search query: '{query_text}'. Returning empty list.")
+            logger.error(f"Could not generate embedding for hybrid search query: '{query_text}'. Returning empty list.")
             return []
         
         # Perform hybrid search
@@ -559,12 +565,12 @@ async def get_available_sources(client: QdrantClient, collection_name: str) -> L
             next_page_offset = current_offset
         
         if processed_count >= max_scroll_limit:
-            print(f"Warning: Reached max scroll limit ({max_scroll_limit}) while fetching sources. List may be incomplete.")
+            logger.warning(f"Reached max scroll limit ({max_scroll_limit}) while fetching sources. List may be incomplete.")
 
-        print(f"Found sources: {sources}")
+        logger.debug(f"Found sources: {sources}")
         return sorted(list(sources))
     except Exception as e:
-        print(f"Error getting available sources from Qdrant: {e}")
+        logger.error(f"Error getting available sources from Qdrant: {e}")
         return []
 
 async def get_collection_stats(
@@ -839,7 +845,7 @@ async def fetch_item_by_id(
         )
         
         if not points_response: # Check if the list is empty
-            print(f"No item found with ID: {item_id}")
+            logger.warning(f"No item found with ID: {item_id}")
             return None
         
         point = points_response[0] # Get the first item from the list
@@ -863,7 +869,7 @@ async def fetch_item_by_id(
         return result
     
     except Exception as e:
-        print(f"Error fetching item by ID {item_id}: {e}")
+        logger.error(f"Error fetching item by ID {item_id}: {e}")
         return None
 
 async def find_similar_content(
@@ -891,7 +897,7 @@ async def find_similar_content(
         # get_embedding will be imported from embedding_utils
         query_embedding = await get_embedding(content_text)
         if not query_embedding:
-            print(f"Could not generate embedding for content text. Returning empty list.")
+            logger.error(f"Could not generate embedding for content text. Returning empty list.")
             return []
         
         # Use helper function to create filter

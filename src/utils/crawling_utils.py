@@ -8,6 +8,12 @@ from xml.etree import ElementTree
 from urllib.parse import urlparse, urldefrag
 from typing import List, Dict, Any, Optional
 
+# Import logging utilities
+from .logging_utils import get_logger
+
+# Initialize logger
+logger = get_logger(__name__)
+
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, MemoryAdaptiveDispatcher
 
 # Chunking configuration from environment variables (or defaults)
@@ -40,11 +46,11 @@ def parse_sitemap(sitemap_url: str) -> List[str]:
         # Namespace-agnostic way to find <loc> tags
         urls = [loc.text for loc in tree.findall('.//{*}loc') if loc.text]
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching sitemap {sitemap_url}: {e}")
+        logger.error(f"Error fetching sitemap {sitemap_url}: {e}")
     except ElementTree.ParseError as e:
-        print(f"Error parsing sitemap XML from {sitemap_url}: {e}")
+        logger.error(f"Error parsing sitemap XML from {sitemap_url}: {e}")
     except Exception as e:
-        print(f"An unexpected error occurred while parsing sitemap {sitemap_url}: {e}")
+        logger.error(f"An unexpected error occurred while parsing sitemap {sitemap_url}: {e}")
     return urls
 
 def smart_chunk_markdown(text: str, chunk_size: Optional[int] = None) -> List[str]:
@@ -121,7 +127,7 @@ def simple_text_chunker(text: str, chunk_size: Optional[int] = None, chunk_overl
         chunk_overlap = CHUNK_OVERLAP
 
     if chunk_overlap >= chunk_size:
-        # print(f"Warning: Chunk overlap ({chunk_overlap}) is >= chunk size ({chunk_size}). Setting overlap to {chunk_size // 3}")
+        logger.warning(f"Chunk overlap ({chunk_overlap}) is >= chunk size ({chunk_size}). Setting overlap to {chunk_size // 3}")
         chunk_overlap = chunk_size // 3
 
     chunks = []
@@ -152,7 +158,7 @@ async def crawl_markdown_file(crawler: AsyncWebCrawler, url: str) -> List[Dict[s
     if result.success and result.markdown:
         return [{'url': url, 'markdown': result.markdown}]
     else:
-        print(f"Failed to crawl {url}: {result.error_message}")
+        logger.error(f"Failed to crawl {url}: {result.error_message}")
         return []
 
 async def crawl_batch(crawler: AsyncWebCrawler, urls: List[str], max_concurrent: int = 10) -> List[Dict[str, Any]]:
@@ -196,7 +202,7 @@ async def crawl_recursive_internal_links(
     if not target_domain and start_urls:
         parsed_first_url = urlparse(start_urls[0])
         target_domain = parsed_first_url.netloc
-        # print(f"Target domain inferred as: {target_domain}")
+        logger.debug(f"Target domain inferred as: {target_domain}")
 
     for depth in range(max_depth):
         if not current_level_urls_to_crawl:
@@ -207,7 +213,7 @@ async def crawl_recursive_internal_links(
         if not urls_for_this_batch:
             break
             
-        # print(f"Depth {depth + 1}, crawling {len(urls_for_this_batch)} URLs: {urls_for_this_batch[:3]}...")
+        logger.debug(f"Depth {depth + 1}, crawling {len(urls_for_this_batch)} URLs: {urls_for_this_batch[:3]}...")
         visited_normalized_urls.update(urls_for_this_batch)
         
         crawl_results_this_batch = await crawler.arun_many(urls=urls_for_this_batch, config=run_config, dispatcher=dispatcher)
@@ -233,5 +239,5 @@ async def crawl_recursive_internal_links(
         
         current_level_urls_to_crawl = next_level_urls_to_visit
 
-    # print(f"Recursive crawl finished. Total pages: {len(results_all_pages)}")
+    logger.info(f"Recursive crawl finished. Total pages: {len(results_all_pages)}")
     return results_all_pages 

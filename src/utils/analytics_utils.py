@@ -3,6 +3,12 @@ Utility functions for analytics, clustering, and visualization.
 """
 from typing import List, Dict, Any, Optional, Tuple
 
+# Import logging utilities
+from .logging_utils import get_logger
+
+# Initialize logger
+logger = get_logger(__name__)
+
 # Qdrant client and models might be needed if fetch_vectors_for_clustering interacts directly
 # For now, assuming it takes a pre-configured client if needed, or relies on qdrant_utils for direct interactions.
 from qdrant_client import QdrantClient # For type hinting if client is passed
@@ -27,15 +33,15 @@ try:
         nltk.data.find('corpora/stopwords')
     except LookupError:
         try:
-            # print("NLTK stopwords not found, attempting to download...")
+            logger.info("NLTK stopwords not found, attempting to download...")
             nltk.download('stopwords', quiet=True)
-            # print("NLTK stopwords downloaded successfully.")
+            logger.info("NLTK stopwords downloaded successfully.")
         except Exception as download_e: # Catch potential errors during download
-            # print(f"Failed to download NLTK stopwords: {download_e}")
+            logger.warning(f"Failed to download NLTK stopwords: {download_e}")
             # NLTK_AVAILABLE = False # Consider if NLTK should be disabled if stopwords fail
             pass # Keep NLTK_AVAILABLE true, other NLTK fns might work
 except ImportError as e:
-    # print(f"Analytics libraries (numpy, scikit-learn, plotly, nltk) not fully available: {e}. Some analytics functions may be limited.")
+    logger.warning(f"Analytics libraries (numpy, scikit-learn, plotly, nltk) not fully available: {e}. Some analytics functions may be limited.")
     np = None
     KMeans = None
     silhouette_score = None
@@ -46,6 +52,15 @@ except ImportError as e:
     nltk = None
     stopwords = None
     NLTK_AVAILABLE = False
+
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    from plotly.subplots import make_subplots
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    logger.warning("Plotly not available. Visualization features will be limited.")
+    PLOTLY_AVAILABLE = False
 
 
 async def fetch_vectors_for_clustering(
@@ -103,7 +118,7 @@ async def fetch_vectors_for_clustering(
         points = points_response # client.scroll returns (points, next_offset_or_none)
 
         if not points:
-            # print(f"No points found in collection '{collection_name}' with the given filter.")
+            logger.warning(f"No points found in collection '{collection_name}' with the given filter.")
             return {
                 "vectors": [], 
                 "payloads": [], 
@@ -122,7 +137,7 @@ async def fetch_vectors_for_clustering(
                 payloads.append(point.payload if point.payload is not None else {})
                 ids.append(point.id)
         
-        # print(f"Fetched {len(vectors)} vectors for clustering from collection '{collection_name}'.")
+        logger.info(f"Fetched {len(vectors)} vectors for clustering from collection '{collection_name}'.")
         return {
             "vectors": vectors, 
             "payloads": payloads, 
@@ -132,7 +147,7 @@ async def fetch_vectors_for_clustering(
         }
     
     except Exception as e:
-        # print(f"Error fetching vectors for clustering: {e}")
+        logger.error(f"Error fetching vectors for clustering: {e}")
         return {
             "vectors": [], 
             "payloads": [], 
@@ -222,7 +237,7 @@ async def perform_clustering(
                     else: # Only one cluster formed
                         silhouette_scores.append(-1) # Assign a low score
                 except Exception as e_k:
-                    # print(f"Could not calculate silhouette for k={k_candidate}: {e_k}")
+                    logger.warning(f"Could not calculate silhouette for k={k_candidate}: {e_k}")
                     silhouette_scores.append(-1) # Assign a low score
 
             if best_k != -1:
@@ -237,7 +252,7 @@ async def perform_clustering(
                      "labels": [],
                      "cluster_sizes": {}
                     }
-            # print(f"Determined optimal number of clusters: {actual_num_clusters} (Silhouette scores: {silhouette_scores})")
+            logger.info(f"Determined optimal number of clusters: {actual_num_clusters} (Silhouette scores: {silhouette_scores})")
 
     elif len(X) < actual_num_clusters:
         if len(X) < 2:
@@ -248,7 +263,7 @@ async def perform_clustering(
                 "labels": [],
                 "cluster_sizes": {}
             }
-        # print(f"Warning: Number of samples ({len(X)}) is less than requested num_clusters ({actual_num_clusters}). Adjusting num_clusters.")
+        logger.warning(f"Number of samples ({len(X)}) is less than requested num_clusters ({actual_num_clusters}). Adjusting num_clusters.")
         actual_num_clusters = max(2, len(X) // 2) if len(X) >= 4 else 2
         if len(X) == 2 or len(X) == 3: actual_num_clusters = 2
 
@@ -262,10 +277,10 @@ async def perform_clustering(
             try:
                 current_silhouette_avg = float(silhouette_score(X, cluster_labels_list))
             except ValueError as sve:
-                # print(f"Could not calculate silhouette score: {sve}")
+                logger.warning(f"Could not calculate silhouette score: {sve}")
                 current_silhouette_avg = None
             except Exception as e_sil: # Catch any other exception during silhouette calculation
-                # print(f"Error calculating silhouette score: {e_sil}")
+                logger.error(f"Error calculating silhouette score: {e_sil}")
                 current_silhouette_avg = None
         
         cluster_sizes_dict = {str(i): int(np.sum(np.array(cluster_labels_list) == i)) for i in range(actual_num_clusters)}
@@ -282,7 +297,7 @@ async def perform_clustering(
         }
     
     except Exception as e:
-        # print(f"Error performing K-means clustering: {e}")
+        logger.error(f"Error performing K-means clustering: {e}")
         return {
             "success": False,
             "error": str(e),
@@ -296,7 +311,7 @@ async def extract_cluster_themes(text: str, max_themes: int = 5) -> List[str]:
     Extract potential themes or keywords from cluster content.
     """
     if not NLTK_AVAILABLE or not CountVectorizer or not stopwords:
-        # print("NLTK or Scikit-learn not available, cannot extract themes.")
+        logger.warning("NLTK or Scikit-learn not available, cannot extract themes.")
         return []
     
     if not text.strip():
@@ -325,7 +340,7 @@ async def extract_cluster_themes(text: str, max_themes: int = 5) -> List[str]:
         return themes
     
     except Exception as e:
-        # print(f"Error extracting cluster themes: {e}")
+        logger.error(f"Error extracting cluster themes: {e}")
         return []
 
 async def generate_cluster_visualization(
@@ -343,15 +358,15 @@ async def generate_cluster_visualization(
         HTML string of the Plotly chart, or None if visualization fails.
     """
     if not NLTK_AVAILABLE or not np or not TSNE or not go or not px:
-        # print("Required libraries (numpy, scikit-learn, plotly, nltk) not installed for visualization.")
+        logger.warning("Required libraries (numpy, scikit-learn, plotly, nltk) not installed for visualization.")
         return None # Or raise an error, or return a message
     
     if not vectors or not cluster_labels or len(vectors) != len(cluster_labels):
-        # print("Invalid input for visualization: vectors or labels missing/mismatched.")
+        logger.warning("Invalid input for visualization: vectors or labels missing/mismatched.")
         return None
     
     if len(vectors) < 2: # t-SNE and plotting require at least 2 points
-        # print("Not enough data points (need at least 2) for t-SNE visualization.")
+        logger.warning("Not enough data points (need at least 2) for t-SNE visualization.")
         return None
 
     X_np = np.array(vectors)
@@ -392,7 +407,7 @@ async def generate_cluster_visualization(
         return html_output
 
     except Exception as e:
-        # print(f"Error generating cluster visualization: {e}")
+        logger.error(f"Error generating cluster visualization: {e}")
         return None
 
 # Helper to calculate optimal K if not provided, used within perform_clustering

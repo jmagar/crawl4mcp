@@ -6,7 +6,12 @@ by importing the necessary modules.
 """
 import asyncio
 import os
-# import uvicorn # No longer explicitly needed here if FastMCP handles its own Uvicorn via run_async
+
+# Import logging utilities
+from .utils.logging_utils import get_logger
+
+# Initialize logger
+logger = get_logger(__name__)
 
 # Import the mcp instance from mcp_setup.py
 # This mcp instance already has lifespan and basic configurations.
@@ -20,26 +25,26 @@ from .tools import retrieval_tools
 from .tools import management_tools
 from .tools import analytics_tools
 
-# Potentially other utilities or configurations that are truly global for the app entry point.
-# For now, most setup is in mcp_setup.py
+# Log that all modules have been imported and registered
+logger.info("MCP server fully initialized with all tools registered")
+logger.debug(f"Registered tools: crawling_tools, retrieval_tools, management_tools, analytics_tools")
 
-async def main():
-    """Configures and runs the MCP server using FastMCP's run_async method."""
-    server_name = os.getenv("MCP_SERVER_NAME", "crawl4mcp")
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "8051")) # Ensure port is int for run_async
-    
-    print(f"Starting MCP server: {server_name} on {host}:{port}...")
-    # The line for printing registered tools is still commented out.
-    # We can investigate the correct way to list FastMCP tools later if needed.
-    # print(f"Registered tools: {list(mcp.tools.keys())}")
+# Export the mcp FastMCP instance as "app" for ASGI servers like uvicorn
+app = mcp.http_app()
 
-    # Use mcp.run_async() as per FastMCP documentation for async contexts
-    # Specify transport, host, and port. FastMCP's run_async will handle Uvicorn/ASGI server setup.
-    await mcp.run_async(transport="streamable-http")
-    # log_level can also be set here if supported by run_async, e.g., log_level="info"
-
+# If running directly, start the server (for development only)
 if __name__ == "__main__":
-    # Ensure any necessary environment setup (like loading .env) happens before this.
-    # This is handled in mcp_setup.py which is imported before main() is called.
-    asyncio.run(main()) 
+    import uvicorn
+    
+    # Get configuration from environment variables
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", 9130))
+    
+    logger.info(f"Starting development server on {host}:{port}")
+    uvicorn.run(
+        "src.app:app",
+        host=host,
+        port=port,
+        reload=True,
+        log_level=os.getenv("LOG_LEVEL", "info").lower()
+    ) 

@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any
 import os
 
 from mcp.server.fastmcp import Context # MCP Context for tool arguments
+from fastmcp.error import ToolError # Import ToolError
 
 # Import the centralized mcp instance
 from ..mcp_setup import mcp
@@ -18,6 +19,11 @@ from ..utils.analytics_utils import (
     # Removed: perform_kmeans_clustering,
     # Removed: visualize_clusters
 )
+# Import logging utilities
+from ..utils.logging_utils import get_logger
+
+# Initialize logger
+logger = get_logger(__name__)
 
 @mcp.tool()
 async def cluster_content(
@@ -30,97 +36,95 @@ async def cluster_content(
     """
     Cluster stored content into semantically similar groups.
     """
+    logger.info(f"Starting content clustering (source_filter={source_filter}, num_clusters={num_clusters}, sample_size={sample_size})")
+    
+    # Try to get instances from context
     qdrant_client_instance = None
     collection_name_str = None
-
+    
     try:
         if hasattr(ctx, 'request_context') and ctx.request_context is not None:
             qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
             collection_name_str = ctx.request_context.lifespan_context.collection_name
         else:
-            raise AttributeError("request_context not available for cluster_content")
-    except (AttributeError, ValueError) as e:
-        print(f"Context access failed for cluster_content ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
+            raise AttributeError("request_context not available on ctx object for cluster_content")
+            
+    except (AttributeError, ValueError) as e: # Catch both expected errors
+        logger.warning(f"Context access failed for cluster_content ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
         try:
             qdrant_client_instance = get_qdrant_client()
             collection_name_str = os.getenv("QDRANT_COLLECTION")
             if not collection_name_str:
-                raise ValueError("QDRANT_COLLECTION environment variable must be set.")
+                error_msg = "QDRANT_COLLECTION environment variable must be set when context is not available."
+                logger.error(error_msg)
+                raise ToolError(message=error_msg, code="CONFIG_ERROR")
         except Exception as e_init:
-            return json.dumps({"success": False, "error": f"Failed to initialize Qdrant: {str(e_init)}"}, indent=2)
-
-    if not all([qdrant_client_instance, collection_name_str]):
-        return json.dumps({"success": False, "error": "Qdrant client or collection name missing for cluster_content."}, indent=2)
-
+            error_msg = f"Failed to initialize Qdrant components: {str(e_init)}"
+            logger.error(error_msg)
+            raise ToolError(message=error_msg, code="INITIALIZATION_ERROR", details={"original_exception": str(e_init)})
+    
+    # Check for required analytics components early
     try:
-        # Fetch vectors for clustering
-        # The utility function expects filter_condition as a dict.
-        # If source_filter is provided, wrap it in the expected dict structure.
-        fetch_filter_condition = None
-        if source_filter:
-            fetch_filter_condition = {"source": source_filter}
-
-        vectors_data = await fetch_vectors_for_clustering(
+        # Try importing necessary dependencies
+        import numpy as np
+        from sklearn.cluster import KMeans
+    except ImportError as e:
+        error_msg = f"Required analytics libraries not available: {str(e)}. Install scipy, numpy, and scikit-learn."
+        logger.error(error_msg)
+        raise ToolError(message=error_msg, code="DEPENDENCY_ERROR", details={"missing_libraries": "scipy, numpy, scikit-learn", "original_exception": str(e)})
+    
+    # Fetch vectors for clustering
+    try:
+        ctx.log.info("Step 1/3: Fetching vectors for clustering analysis...")
+        ctx.report_progress(1, 3, "Fetching vectors")
+        logger.info("Fetching vectors for clustering analysis...")
+        vectors_and_metadata = await fetch_vectors_for_clustering(
             client=qdrant_client_instance,
             collection_name=collection_name_str,
-            filter_condition=fetch_filter_condition,
-            sample_size=sample_size,
-            with_payload_fields=["url", "text", "source"]
+            source_filter=source_filter,
+            limit=sample_size if sample_size else 500  # Default sample size
         )
         
-        if not vectors_data or not vectors_data["vectors"]:
-            return json.dumps({"success": False, "error": "No vectors found for clustering with the given filters.", "details": vectors_data}, indent=2)
-
-        # 2. Perform clustering
-        # num_clusters will be calculated if None by perform_clustering
-        cluster_results = await perform_clustering(vectors_data["vectors"], num_clusters=num_clusters) 
-
-        # Check if perform_clustering itself was successful
-        if not cluster_results.get("success"): # Check the success flag from perform_clustering
-            error_message = cluster_results.get("error", "Clustering sub-process failed without specific error.")
-            # Include num_clusters from the error response if available, for context
-            attempted_num_clusters = cluster_results.get("num_clusters", "N/A") 
-            return json.dumps({
-                "success": False, 
-                "error": f"Clustering failed: {error_message}",
-                "details": {
-                    "source_filter": source_filter,
-                    "sample_size_used": vectors_data.get("actual_sample_size"),
-                    "attempted_num_clusters_by_util": attempted_num_clusters
-                }
-            }, indent=2)
-
-        # 3. Prepare results
-        output: Dict[str, Any] = {
+        if not vectors_and_metadata or len(vectors_and_metadata) == 0:
+            error_msg = f"No vectors retrieved for clustering. Check if collection has data" + (f" for source '{source_filter}'" if source_filter else ".")
+            logger.warning(error_msg)
+            raise ToolError(message=error_msg, code="NO_DATA")
+            
+        logger.info(f"Retrieved {len(vectors_and_metadata)} vectors for clustering")
+        ctx.log.info(f"Retrieved {len(vectors_and_metadata)} vectors.")
+        
+        # Perform clustering
+        ctx.log.info("Step 2/3: Performing clustering...")
+        ctx.report_progress(2, 3, "Performing clustering")
+        clustering_results = await perform_clustering(
+            vectors_and_metadata=vectors_and_metadata,
+            num_clusters=num_clusters,  # If None, perform_clustering will determine optimal
+            include_visualization=include_visualization
+        )
+        
+        # Format results for return
+        result = {
             "success": True,
-            "source_filter": source_filter,
-            "sample_size_used": vectors_data["actual_sample_size"],
-            "total_vectors_in_source": vectors_data["total_vectors_in_source"],
-            "num_clusters": cluster_results["num_clusters"],
-            "cluster_sizes": cluster_results["cluster_sizes"],
-            # Optionally add item_ids per cluster if needed, though it might be large
-            # "clusters": cluster_results["clusters_with_ids"] 
+            "total_vectors": len(vectors_and_metadata),
+            "clusters": clustering_results["clusters"],
+            "cluster_count": len(clustering_results["clusters"]),
+            "source_filter": source_filter if source_filter else "all sources"
         }
-
-        # 4. Generate visualization if requested
-        if include_visualization:
-            if vectors_data["actual_sample_size"] < 2:
-                output["visualization_error"] = "Not enough data points for visualization (need at least 2)."
-            else:
-                try:
-                    visualization_html = await generate_cluster_visualization(vectors_data["vectors"], cluster_results["labels"])
-                    # For simplicity, we might not embed HTML directly in JSON response, 
-                    # but indicate availability or save it and return a path/URL.
-                    # Here, we'll just confirm it was generated.
-                    output["visualization_generated"] = True
-                    # If you want to include the HTML (can be large):
-                    # output["visualization_html"] = visualization_html
-                except Exception as viz_e:
-                    output["visualization_error"] = f"Failed to generate visualization: {str(viz_e)}"
-
-        return json.dumps(output, indent=2)
-
+        
+        # Include visualization data if requested and available
+        if include_visualization and "visualization" in clustering_results:
+            logger.info("Including visualization data in response")
+            result["visualization"] = clustering_results["visualization"]
+            
+        ctx.report_progress(3, 3, "Clustering complete")
+        ctx.log.info("Step 3/3: Clustering complete.")
+        return json.dumps(result, indent=2)
+        
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, indent=2)
+        error_msg = f"Error during clustering process: {str(e)}"
+        logger.error(error_msg)
+        import traceback
+        logger.debug(traceback.format_exc())
+        raise ToolError(message=error_msg, code="CLUSTERING_ERROR", details={"original_exception": str(e), "traceback": traceback.format_exc()})
 
 # Ensure the file ends with a newline for linters 
