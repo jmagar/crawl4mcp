@@ -11,7 +11,7 @@ from mcp.server.fastmcp.exceptions import ToolError # Correct import path
 # Import the centralized mcp instance
 from ..mcp_setup import mcp
 # Import utility functions
-from ..utils.qdrant_utils import get_qdrant_client
+from ..utils.qdrant.setup import get_qdrant_client
 from ..utils.analytics_utils import (
     fetch_vectors_for_clustering,
     perform_clustering,

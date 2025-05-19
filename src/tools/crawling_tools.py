@@ -15,7 +15,9 @@ from mcp.server.fastmcp.exceptions import ToolError # Correct import path
 # Import the centralized mcp instance
 from ..mcp_setup import mcp
 # Import utility functions
-from ..utils.qdrant_utils import store_embeddings, get_qdrant_client, QdrantClient
+from ..utils.qdrant.setup import get_qdrant_client
+from ..utils.qdrant.ingestion import store_embeddings
+from qdrant_client import QdrantClient
 from ..utils.crawling_utils import (
     is_sitemap,
     is_txt,

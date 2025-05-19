@@ -11,12 +11,12 @@ from mcp.server.fastmcp.exceptions import ResourceError # Correct import path
 
 # Import the centralized mcp instance
 from ..mcp_setup import mcp
-# Import utility functions from qdrant_utils
-from ..utils.qdrant_utils import (
-    get_available_sources as get_available_sources_util, # Alias
-    get_collection_stats as get_collection_stats_util,   # Alias
-    get_qdrant_client, # Added import
-    query_qdrant # Added import
+# Import utility functions
+from ..utils.qdrant.setup import get_qdrant_client
+from ..utils.qdrant.retrieval import query_qdrant
+from ..utils.qdrant.admin import (
+    get_available_sources as get_available_sources_util, # MODIFIED IMPORT
+    get_collection_stats as get_collection_stats_util    # MODIFIED IMPORT
 )
 # Import logging utilities
 from ..utils.logging_utils import get_logger

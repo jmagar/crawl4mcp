@@ -14,7 +14,7 @@ logger = get_logger(__name__)
 from qdrant_client import QdrantClient # For type hinting if client is passed
 
 # Import create_qdrant_filter from the new qdrant_utils module
-from .qdrant_utils import create_qdrant_filter
+from .qdrant.retrieval import create_qdrant_filter
 
 # Optional imports for analytics, attempt gracefully
 try:

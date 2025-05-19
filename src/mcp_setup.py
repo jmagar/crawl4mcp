@@ -15,7 +15,7 @@ from qdrant_client import QdrantClient
 from crawl4ai import AsyncWebCrawler, BrowserConfig
 
 # Assuming these utilities are needed for lifespan setup
-from .utils.qdrant_utils import get_qdrant_client, ensure_qdrant_collection_async
+from .utils.qdrant.setup import get_qdrant_client, ensure_qdrant_collection_async
 # Import logging utilities
 from .utils.logging_utils import setup_logging, get_logger, LogAccessor # Import LogAccessor
 

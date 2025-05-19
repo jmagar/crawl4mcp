@@ -11,14 +11,14 @@ from mcp.server.fastmcp.exceptions import ToolError # Correct import path
 
 # Import the centralized mcp instance
 from ..mcp_setup import mcp
-# Import utility functions from qdrant_utils
-from ..utils.qdrant_utils import (
+# Import utility functions
+from ..utils.qdrant.setup import get_qdrant_client
+from ..utils.qdrant.retrieval import (
     query_qdrant,
-    perform_hybrid_search as perform_hybrid_search_util, # Alias to avoid name clash
-    get_similar_items as get_similar_items_util,       # Alias
-    fetch_item_by_id as fetch_item_by_id_util,         # Alias
-    find_similar_content as find_similar_content_util,  # Alias
-    get_qdrant_client                                  
+    perform_hybrid_search as perform_hybrid_search_util,
+    get_similar_items as get_similar_items_util,
+    fetch_item_by_id as fetch_item_by_id_util,
+    find_similar_content as find_similar_content_util
 )
 # Import logging utilities
 from ..utils.logging_utils import get_logger
