@@ -5,7 +5,7 @@ description = "MCP server for integrating web crawling and RAG into AI agents an
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "crawl4ai==0.6.2",
+    "crawl4ai==0.6.3",
     "mcp==1.9.0",
     "qdrant-client==1.14.2",
     "requests==2.32.3",

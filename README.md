@@ -4,42 +4,37 @@
   <em>Enhance AI Agents & Coding Assistants with Web Crawling 🕸️, RAG 🧠, and Analytics 📊 Capabilities!</em>
 </p>
 
-A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com) and [Qdrant](https://qdrant.tech/). This server empowers AI agents and coding assistants by providing them with advanced web crawling, Retrieval Augmented Generation (RAG), and data analytics functionalities.
+An MCP (Model Context Protocol) server built with FastMCP, integrated with Crawl4AI and Qdrant. This server empowers AI agents by providing advanced web crawling, Retrieval Augmented Generation (RAG), and data analytics tools.
 
-At its core, this server leverages a self-hosted [BAAI/bge-large-en-v1.5](https://huggingface.co/BAAI/bge-large-en-v1.5) model for generating text embeddings and utilizes Qdrant for efficient vector storage and search. It has been extensively debugged to ensure tool robustness, especially for Qdrant interactions and dependency management within Docker.
+It uses a self-hosted BAAI/bge-large-en-v1.5 model (via a TEI server) for text embeddings and Qdrant for vector storage.
 
 ## ✨ Features
 
-*   **🤖 Smart Web Crawling**: Powered by Crawl4AI, it intelligently crawls diverse web content:
-    *   Single web pages
-    *   Sitemaps (`sitemap.xml`)
-    *   Text files listing URLs (`llms.txt`)
-    *   Recursive website crawling up to a specified depth
-    *   Git Repositories
-*   **⚙️ Self-Hosted Embeddings**: Generates high-quality embeddings locally using the BAAI/bge-large-en-v1.5 model via the included Text Embeddings Inference (TEI) server.
-*   **💾 Vector Storage**: Securely stores crawled content and their embeddings in the bundled Qdrant vector database.
-*   **🔍 RAG Queries**: Enables semantic search over the stored content using Retrieval Augmented Generation techniques.
-*   **🔀 Hybrid Search**: Combines vector similarity with keyword-based filtering for more precise search results.
+*   **🤖 Smart Web Crawling**: Powered by Crawl4AI:
+    *   Single pages, sitemaps, text files with URL lists.
+    *   Recursive website crawling.
+    *   Git Repositories.
+*   **⚙️ Self-Hosted Embeddings**: Uses BAAI/bge-large-en-v1.5 via a Text Embeddings Inference (TEI) server.
+*   **💾 Self-Hosted Vector Storage**: Qdrant for crawled content and embeddings.
+*   **🔍 RAG & Hybrid Search**: Semantic and keyword-enhanced search.
 *   **📊 Advanced Analytics & Management**:
-    *   `get_collection_stats`: Provides detailed statistics about a Qdrant collection, including vector counts, configuration (vector params, payload schema), and performance metrics (optimizer status, cluster info).
-    *   `get_available_sources`: Lists unique source domains from crawled data.
-    *   `cluster_content`: Performs K-means clustering on stored vectors, identifies potential themes, and can generate interactive 2D visualizations of clusters (requires optional dependencies).
-*   **🎯 Source Filtering**: Allows RAG queries and other operations to be refined by specific source domains.
-*   **🔌 MCP Integration**: Seamlessly exposes all functionalities as tools compatible with the Model Context Protocol.
+    *   `get_collection_stats`: Detailed Qdrant collection statistics.
+    *   `get_available_sources`: Lists unique crawled source domains.
+    *   `cluster_content`: K-means clustering of vectors with optional t-SNE visualization.
+*   **🔌 MCP Integration**: All functionalities exposed as MCP tools.
 *   **📦 Easy Deployment & Development**:
-    *   Comes with a `docker-compose.yml` file that orchestrates the entire stack: MCP server, TEI server, and Qdrant database.
-    *   Features live reload for the MCP server in Docker using `develop.watch` for a smoother development experience.
-*   **🛡️ Robust Tooling**: Tools are designed with fallback mechanisms for critical services (like Qdrant client initialization) to ensure functionality even when not run within a full server request context.
+    *   `docker-compose.yml` for full stack orchestration (MCP server, TEI, Qdrant).
+    *   Live reload for the MCP server in Docker.
+*   **🛡️ Robust Tooling**: Fallback mechanisms for critical service initialization.
 
 ## 🛠️ Setup and Installation
 
 ### Prerequisites
 
-*   Python 3.10+ (Dockerfile uses `python:3.12-slim`, ensure local matches if not using Docker for the server)
+*   Python 3.12+ (Dockerfile uses `python:3.12-slim`)
 *   Docker and Docker Compose
-*   NVIDIA GPU with up-to-date drivers (recommended for the TEI server with GPU acceleration as configured in `docker-compose.yml`)
-*   (Optional) An OpenAI API Key and a chosen model if you wish to enable any OpenAI-dependent features (currently, contextual summaries are not a primary feature but the framework supports it).
-*   (Optional) `HUGGING_FACE_HUB_TOKEN` environment variable (set in your system or `.env` file) if the TEI server needs to download models from a private Hugging Face Hub repository.
+*   NVIDIA GPU (recommended for TEI server)
+*   (Optional) `HUGGING_FACE_HUB_TOKEN` if your TEI model needs it.
 
 ### 1. Clone the Repository 📂
 
@@ -50,123 +45,149 @@ At its core, this server leverages a self-hosted [BAAI/bge-large-en-v1.5](https:
 
 ### 2. Configure Environment Variables ⚙️
 
-Create a `.env` file in the project root by copying the example file:
+Create a `.env` file in the project root (you can copy `.env.example`):
 
    ```bash
-cp .env.example .env
-```
+   cp .env.example .env
+   ```
 
-Now, open and edit the `.env` file. Many settings have sensible defaults that work well with the Docker Compose setup:
+Open and edit your `.env` file. Key variables include:
 
 ```env
-# MCP Server Transport (sse or stdio)
-TRANSPORT=sse
+# --- MCP Server --- 
 HOST=0.0.0.0
-PORT=8051 # Port for the MCP server
+PORT=9130
+# PATH=/mcp # Default path prefix for MCP server if needed by client
+LOG_LEVEL=DEBUG
+LOG_FILENAME=crawl4mcp.log
 
-# Self-Hosted Embedding Server (Defaults to the service in docker-compose.yml)
-# EMBEDDING_SERVER_URL=http://localhost:8080 # TEI server runs on the host network, port 8080
+# --- Embedding Server (TEI) --- 
+EMBEDDING_SERVER_URL=http://crawl4mcp-embeddings:8080/embed # Your TEI server URL
+EMBEDDING_SERVER_BATCH_SIZE=64
+VECTOR_DIM=1024 # Dimension for BAAI/bge-large-en-v1.5
 
-# Qdrant Configuration (Defaults to the service in docker-compose.yml)
-# QDRANT_URL=http://qdrant:6333 # Service name for Qdrant within the Docker network
-QDRANT_API_KEY= # Optional: Your Qdrant API Key if using an external Qdrant Cloud instance
-QDRANT_COLLECTION=crawled_pages # Or your preferred collection name
-VECTOR_DIM=1024 # Dimension for BAAI/bge-large-en-v1.5 embeddings
+# --- Qdrant Vector Database --- 
+QDRANT_URL=http://crawl4mcp-qdrant:6333 # Your Qdrant instance URL
+QDRANT_API_KEY=your_qdrant_api_key_if_any # Optional
+QDRANT_COLLECTION=crawl4mcp # Preferred collection name
+QDRANT_UPSERT_BATCH_SIZE=512 # Batch size for Qdrant upserts
 
-# Hugging Face Hub Token (if your TEI model requires it for download)
+# --- Crawl4AI --- 
+CHUNK_SIZE=500 # General text chunk size
+CHUNK_OVERLAP=100 # Overlap for general text chunking
+MARKDOWN_CHUNK_SIZE=750 # Chunk size for Markdown content from web pages
+CRAWLER_VERBOSE=true # Verbosity for Crawl4AI's browser operations
+
+# --- Docker --- 
+# COMPOSE_BAKE=true # For Docker buildkit
+# DOCKER_BUILDKIT=1
+# COMPOSE_DOCKER_CLI_BUILD=1
+
+# --- Hugging Face Hub Token (if TEI model requires it for download) --- 
 # HUGGING_FACE_HUB_TOKEN=your_hf_token_here
-
-# Optional: For any features using OpenAI (e.g., if contextual summaries were re-enabled)
-# OPENAI_API_KEY=
-# SUMMARIZATION_MODEL_CHOICE=gpt-3.5-turbo
-
-# Optional: For Crawl4AI Browser behavior
-# CRAWLER_VERBOSE=false
 ```
 
 **Key Points for `.env`:**
 
-*   The `docker-compose.yml` provides defaults for `EMBEDDING_SERVER_URL` (to `http://localhost:8080`) and `QDRANT_URL` (to `http://qdrant:6333`) if they aren't set in your `.env`. These are tailored for the included services.
-*   `VECTOR_DIM` must be `1024` for the `BAAI/bge-large-en-v1.5` model.
-*   If the `BAAI/bge-large-en-v1.5` model is private or requires authentication from Hugging Face Hub, ensure your `HUGGING_FACE_HUB_TOKEN` is set in the `.env` file.
+*   Ensure `EMBEDDING_SERVER_URL` and `QDRANT_URL` point to your running instances.
+*   `VECTOR_DIM` must match your embedding model (1024 for `BAAI/bge-large-en-v1.5`).
+*   The `docker-compose.yml` in this repository is primarily for the MCP application itself; it assumes TEI and Qdrant might be run as separate services or externally.
 
 ### 3. Build and Run with Docker Compose 🐳
 
-This is the **recommended method** to run the entire application stack (MCP Server, TEI Embeddings Server, and Qdrant database).
-
 ```bash
-docker compose up --build -d # Use 'docker-compose' if 'docker compose' is not available
+docker compose up --build -d
 ```
 
-This single command will:
+This command will:
 
-*   🛠️ Build the Docker image for the MCP server (including optional analytics dependencies and NLTK data).
-*   📥 Pull the necessary images for the TEI server and Qdrant database if they're not already on your system.
-*   🚀 Start all three services, fully orchestrated.
-*   🔄 Enable live reload for the MCP server: changes in the `./src` directory will trigger an automatic rebuild and restart of the service.
-*   🌐 The MCP server will be accessible based on your `HOST` and `PORT` settings (e.g., `http://localhost:8051` if `PORT=8051`).
-*   💾 Qdrant data will be persisted in a Docker volume named `qdrant_data`.
-*   🧠 TEI model weights will be saved to a local `./models` directory.
+*   Build the MCP server image.
+*   Start the MCP server.
+*   Enable live reload for changes in `./src`.
+*   The MCP server will be accessible based on `HOST` and `PORT` (e.g., `http://localhost:9130`).
 
-To stop all services:
+To stop the service:
 ```bash
-docker compose down # Or 'docker-compose down'
+docker compose down
 ```
 
 ### 4. (Alternative) Local Python Environment Setup for MCP Server 💻
 
-If you prefer to run only the MCP server locally (e.g., for development purposes) and connect to TEI and Qdrant instances that are managed separately:
-
+Briefly:
 ```bash
-# Create and activate a virtual environment (highly recommended)
 uv venv
 source .venv/bin/activate
-
-# Install dependencies (include optional groups as needed)
-uv pip install -e "."                       # Base installation
-# For analytics and visualization tools (like cluster_content with visualization):
 uv pip install -e ".[visualization]"
-# If any OpenAI features were to be used:
-# uv pip install -e ".[openai]"
-# To include all optional dependencies:
-# uv pip install -e ".[openai,visualization]"
-
-# Set up Playwright browsers for Crawl4AI
 crawl4ai-setup
-
-# Important: Ensure your .env file correctly points to your externally running TEI and Qdrant instances.
-# Then, run the MCP server:
 python -m src.app
 ```
+Ensure your `.env` correctly points to TEI and Qdrant if running them externally.
 
 ## 🛠️ MCP Tools Provided
 
-Once the server is up and running, it exposes the following tools through the Model Context Protocol:
+Once the server is running, it exposes these tools (prefixes removed):
 
-*   `mcp_crawl4ai_crawl_single_page(url: str)`: Crawls a single web page and stores its content.
-*   `mcp_crawl4ai_smart_crawl_url(url: str, max_depth: Optional[int] = 1, chunk_size: Optional[int] = None, max_concurrent: Optional[int] = 5)`: Intelligently crawls a given URL. It can detect and process sitemaps, text files containing URL lists, or perform recursive crawls on regular web pages. Content is then stored. (Defaults from `crawling_utils.AsyncWebCrawlerConfig`)
-*   `mcp_crawl4ai_crawl_repo(repo_url: str, branch: Optional[str] = None, chunk_size: Optional[int] = 2000, chunk_overlap: Optional[int] = 200)`: Clones a Git repository (using `/usr/bin/git`), processes files (common code/text extensions by default), chunks their content, and stores them for RAG.
-*   `mcp_crawl4ai_perform_rag_query(query: str, source: Optional[str] = None, match_count: int = 5)`: Executes a Retrieval Augmented Generation query against the indexed content.
-*   `mcp_crawl4ai_get_available_sources()`: Fetches a list of unique source domains that have been successfully crawled and stored.
-*   `mcp_crawl4ai_perform_hybrid_search(query: str, filter_text: Optional[str] = None, vector_weight: float = 0.7, keyword_weight: float = 0.3, source: Optional[str] = None, match_count: int = 5)`: Performs a hybrid search combining vector similarity with keyword/text-based filtering.
-*   `mcp_crawl4ai_get_collection_stats(collection_name: Optional[str] = None, include_segments: bool = False)`: Gets detailed statistics about a Qdrant collection including vector count, configuration, payload schema, optimizer status, and Qdrant cluster status.
-*   `mcp_crawl4ai_find_similar_content(content_text: str, filter_source: Optional[str] = None, match_count: int = 5)`: Finds similar content based on input text, optionally filtering by source. (Note: `filter_condition` in the underlying util is richer, tool exposes `filter_source`).
-*   `mcp_crawl4ai_get_similar_items(item_id: str, filter_source: Optional[str] = None, match_count: int = 5)`: Finds similar items based on vector similarity using an existing item ID, optionally filtering by source.
-*   `mcp_crawl4ai_cluster_content(source_filter: Optional[str] = None, num_clusters: Optional[int] = None, sample_size: Optional[int] = 1000, include_visualization: bool = False)`: Fetches vectors (optionally filtered by source and sampled), performs K-means clustering, and returns cluster information. If `include_visualization` is true and visualization dependencies (`.[visualization]`) are installed, it also generates and returns an HTML string for a 2D t-SNE plot of the clusters.
+*   `crawl_single_page(url: str)`
+    *   `url: str` - The URL of the single web page to crawl.
+*   `smart_crawl_url(url: str, max_depth: Optional[int] = 3, chunk_size: Optional[int] = None, max_concurrent: Optional[int] = 30)`
+    *   `url: str` - The starting URL to crawl (can be a webpage, sitemap.xml, or .txt file with URLs).
+    *   `max_depth: Optional[int]` (default: 3) - Maximum depth for recursive crawls if the URL is a webpage.
+    *   `chunk_size: Optional[int]` (default: `MARKDOWN_CHUNK_SIZE` from env, typically 750) - Max size of each markdown content chunk from web pages.
+    *   `max_concurrent: Optional[int]` (default: 30) - Maximum concurrent requests for crawling multiple URLs (e.g., from sitemap or recursive crawl).
+*   `crawl_repo(repo_url: str, branch: Optional[str] = None, chunk_size: Optional[int] = None, chunk_overlap: Optional[int] = None, ignore_dirs: Optional[List[str]] = None, allowed_extensions: Optional[List[str]] = None)`
+    *   `repo_url: str` - URL of the Git repository to crawl.
+    *   `branch: Optional[str]` (default: repository's default branch) - Specific branch to clone.
+    *   `chunk_size: Optional[int]` (default: `CHUNK_SIZE` from env, typically 500) - Size of each text chunk for processing repository files.
+    *   `chunk_overlap: Optional[int]` (default: `CHUNK_OVERLAP` from env, typically 100 for repo files) - Overlap between text chunks for repository files.
+    *   `ignore_dirs: Optional[List[str]]` (default: `[".git", "node_modules", "__pycache__", ...])` - List of directory names or path patterns to ignore.
+    *   `allowed_extensions: Optional[List[str]]` (default: None, processes most common text/code files) - Specific file extensions to process (e.g., `[".py", ".js"]`). If None, a broad set of text-based files are considered.
+*   `perform_rag_query(query: str, source: Optional[str] = None, match_count: int = 5)`
+    *   `query: str` - The natural language query for semantic search.
+    *   `source: Optional[str]` (default: None) - Optional source domain to filter results (e.g., 'example.com').
+    *   `match_count: int` (default: 5) - Maximum number of results to return.
+*   `get_available_sources()`
+    *   No parameters.
+*   `perform_hybrid_search(query: str, filter_text: Optional[str] = None, vector_weight: float = 0.7, keyword_weight: float = 0.3, source: Optional[str] = None, match_count: int = 5)`
+    *   `query: str` - The query text for semantic vector search.
+    *   `filter_text: Optional[str]` (default: None) - Optional keyword text for filtering.
+    *   `vector_weight: float` (default: 0.7) - Weight for vector search results (0.0-1.0).
+    *   `keyword_weight: float` (default: 0.3) - Weight for keyword search results (0.0-1.0). (Note: weights are normalized if they don't sum to 1.0).
+    *   `source: Optional[str]` (default: None) - Optional source domain to filter results.
+    *   `match_count: int` (default: 5) - Maximum number of results to return.
+*   `get_collection_stats(collection_name: Optional[str] = None, include_segments: bool = False)`
+    *   `collection_name: Optional[str]` (default: uses `QDRANT_COLLECTION` from env) - Specific collection to get stats for. If None, stats for the default server collection (or all if no default is set) are fetched.
+    *   `include_segments: bool` (default: False) - Whether to include detailed segment information (can be verbose, currently placeholder in implementation).
+*   `find_similar_content(content_text: str, filter_source: Optional[str] = None, match_count: int = 5)`
+    *   `content_text: str` - Text content to find similar items for.
+    *   `filter_source: Optional[str]` (default: None) - Optional source domain to filter results.
+    *   `match_count: int` (default: 5) - Maximum number of similar items to return.
+*   `get_similar_items(item_id: str, filter_source: Optional[str] = None, match_count: int = 5)`
+    *   `item_id: str` - ID of the item in Qdrant to find recommendations for.
+    *   `filter_source: Optional[str]` (default: None) - Optional source domain to filter results.
+    *   `match_count: int` (default: 5) - Maximum number of similar items to return.
+*   `fetch_item_by_id(item_id: str, ctx: Optional[Context] = None)`
+    *   `item_id: str` - ID of the item to fetch from Qdrant.
+    *   `ctx: Optional[Context]` - MCP Context object (usually injected by the server).
+*   `cluster_content(ctx: Context, source_filter: Optional[str] = None, num_clusters: Optional[int] = None, sample_size: Optional[int] = None, include_visualization: bool = False)`
+    *   `ctx: Context` - MCP Context object (required, injected by the server).
+    *   `source_filter: Optional[str]` (default: None) - Optional source domain to filter vectors for clustering.
+    *   `num_clusters: Optional[int]` (default: None, auto-determined) - Number of clusters to create. If None, an optimal number is attempted.
+    *   `sample_size: Optional[int]` (default: None, uses 500 in util) - Maximum number of vectors to fetch for clustering.
+    *   `include_visualization: bool` (default: False) - Whether to generate and include HTML for a t-SNE visualization of clusters.
 
 ## 🧑‍💻 Development
 
-Ensure you have `uv` installed for managing the Python project environment.
+Uses `uv` for environment and package management.
 
 ```bash
-# Install all dependencies, including optional ones for development
-uv pip install -e ".[visualization]" # Add other groups like [openai] if needed
-
-# Example: To run linters/formatters (e.g., using Ruff if configured)
-# uv run ruff format .
-# uv run ruff check .
+# Install dependencies, including optional ones
+uv pip install -e ".[visualization]"
 ```
 
 ## 🙌 Contributing
 
+<<<<<<< Updated upstream
 Contributions are highly welcome! Whether it's a bug report, feature request, or a pull request, please feel free to engage with the project.
+=======
+Contributions welcome! Please open an issue or PR.
+>>>>>>> Stashed changes

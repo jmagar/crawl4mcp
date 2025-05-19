@@ -27,13 +27,14 @@ from ..utils.logging_utils import get_logger
 logger = get_logger(__name__)
 
 @mcp.tool()
-async def perform_rag_query(ctx: Context, query: str, source: Optional[str] = None, match_count: int = 5) -> str:
+async def perform_rag_query(query: str, source: Optional[str] = None, match_count: int = 5, ctx: Optional[Context] = None) -> str:
     """
     Perform a RAG (Retrieval Augmented Generation) query on the stored content.
     Args:
         query: The search query.
         source: Optional source domain to filter results (e.g., 'example.com').
         match_count: Maximum number of results to return (default: 5).
+        ctx: Optional context object
     """
     logger.info(f"RAG query: '{query}' (source filter: {source}, match count: {match_count})")
     
@@ -106,13 +107,13 @@ async def perform_rag_query(ctx: Context, query: str, source: Optional[str] = No
 
 @mcp.tool()
 async def perform_hybrid_search(
-    ctx: Context, 
     query: str, 
     filter_text: Optional[str] = None, 
     vector_weight: float = 0.7, 
     keyword_weight: float = 0.3, 
     source: Optional[str] = None, 
-    match_count: int = 5
+    match_count: int = 5,
+    ctx: Optional[Context] = None
 ) -> str:
     """
     Perform a hybrid search combining vector similarity with keyword/text-based filtering.
@@ -164,10 +165,10 @@ async def perform_hybrid_search(
 
 @mcp.tool()
 async def get_similar_items(
-    ctx: Context,
     item_id: str,
     filter_source: Optional[str] = None,
-    match_count: int = 5
+    match_count: int = 5,
+    ctx: Optional[Context] = None
 ) -> str:
     """
     Find similar items based on vector similarity using Qdrant's recommendation API.
@@ -210,7 +211,7 @@ async def get_similar_items(
         raise ToolError(message=f"Error finding similar items: {str(e)}", code="SIMILAR_ITEMS_ERROR", details={"item_id": item_id, "original_exception": str(e)})
 
 @mcp.tool()
-async def fetch_item_by_id(ctx: Context, item_id: str) -> str:
+async def fetch_item_by_id(item_id: str, ctx: Optional[Context] = None) -> str:
     """
     Fetch a specific item by ID from a Qdrant collection.
     """
@@ -252,10 +253,10 @@ async def fetch_item_by_id(ctx: Context, item_id: str) -> str:
 
 @mcp.tool()
 async def find_similar_content(
-    ctx: Context,
     content_text: str,
     filter_source: Optional[str] = None,
-    match_count: int = 5
+    match_count: int = 5,
+    ctx: Optional[Context] = None
 ) -> str:
     """
     Find similar content based on text, not an existing item ID.

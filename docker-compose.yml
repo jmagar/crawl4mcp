@@ -1,11 +1,5 @@
 services:
-  # embeddings:
-  #   image: ghcr.io/huggingface/text-embeddings-inference:1.5
-  #   container_name: tei-embeddings
-  #   network_mode: host  # Use host networking
-  #   restart: unless-stopped
-  #   # Remove ports mapping - not needed with host network
-  #   volumes:
+  # crawl4mcp-embeddings:
   #     # Persist model weights
   #     # - ./models:/data
   #     # Alternative: use a Docker volume
@@ -34,30 +28,25 @@ services:
 
   crawl4mcp:
     container_name: crawl4mcp
+    labels:
+      - com.centurylinklabs.watchtower.enable=false
     restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "${PORT:-8051}:${PORT:-8051}"
+      - ${PORT:-8051}:${PORT:-8051}
     environment:
       - HOST=${HOST:-0.0.0.0}
       - PORT=${PORT:-8051}
-      - TRANSPORT=${TRANSPORT:-sse}
-      
       # Self-Hosted Embedding Server (Required)
-      - EMBEDDING_SERVER_URL=${EMBEDDING_SERVER_URL:-http://localhost:8080}
-      
+      - EMBEDDING_SERVER_URL=${EMBEDDING_SERVER_URL:-http://crawl4mcp-embeddings:8080}
       # Qdrant Configuration (Required)
-      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
+      - QDRANT_URL=${QDRANT_URL:-http://crawl4mcp-qdrant:6333}
       - QDRANT_API_KEY=${QDRANT_API_KEY:-}
-      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-crawled_pages}
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-crawl4mcp}
       - VECTOR_DIM=${VECTOR_DIM:-1024}
-      
-      # OpenAI Configuration (Optional - for contextual summaries)
-      # Set OPENAI_API_KEY and SUMMARIZATION_MODEL_CHOICE in .env to enable summaries
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - SUMMARIZATION_MODEL_CHOICE=${SUMMARIZATION_MODEL_CHOICE:-}
+
     volumes:
       - .:/app # Mounts the current directory (containing src, etc.) to /app in the container
     develop:
@@ -68,20 +57,20 @@ services:
     # networks:
     #   - qdrant-network
 
-#   qdrant:
-#     container_name: qdrant
-#     image: qdrant/qdrant:latest
-#     restart: unless-stopped
-#     ports:
-#       - "6333:6333"  # HTTP API
-#       - "6334:6334"  # gRPC API
-#     volumes:
-#       - qdrant_data:/qdrant/storage
-#     networks:
-#       - qdrant-network
+    #   crawl4mcp-qdrant:
+    #     container_name: crawl4mcp-qdrant
+    #     image: qdrant/qdrant:latest
+    #     restart: unless-stopped
+    #     ports:
+    #       - "6333:6333"  # HTTP API
+    #       - "6334:6334"  # gRPC API
+    #     volumes:
+    #       - qdrant_data:/qdrant/storage
+    #     networks:
+    #       - crawl4mcp-network
 
-# volumes:
-#   qdrant_data:  # Persistent storage for Qdrant vectors
+    # volumes:
+    #   qdrant_data:  # Persistent storage for Qdrant vectors
 
-# networks:
-#   qdrant-network:
+    # networks:
+    #   crawl4mcp-network:

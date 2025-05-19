@@ -63,9 +63,12 @@ class LifespanContext:
     log_accessor: LogAccessor   # Add the LogAccessor instance
 
 @asynccontextmanager
-async def lifespan_context_manager() -> AsyncIterator[LifespanContext]:
+async def lifespan_context_manager(app) -> AsyncIterator[LifespanContext]:
     """
     Context manager for FastMCP lifespan to create and clean up resources.
+    
+    Args:
+        app: The FastMCP server instance
     """
     logger.info("Initializing FastMCP application and resources")
     qdrant_client_instance = None
@@ -73,11 +76,12 @@ async def lifespan_context_manager() -> AsyncIterator[LifespanContext]:
     log_accessor_instance = None # Initialize to None
 
     try:
-        # Initialize Qdrant Client
+        # Initialize Qdrant Client - get_qdrant_client() uses env vars internally
+        # and doesn't take explicit parameters
         qdrant_url = os.getenv("QDRANT_URL")
         qdrant_api_key = os.getenv("QDRANT_API_KEY")
         logger.info(f"Attempting to connect to Qdrant at {qdrant_url}")
-        qdrant_client_instance = get_qdrant_client(qdrant_url=qdrant_url, api_key=qdrant_api_key)
+        qdrant_client_instance = get_qdrant_client()
         logger.info("Successfully connected to Qdrant.")
 
         # Ensure Qdrant Collection Exists
@@ -89,9 +93,8 @@ async def lifespan_context_manager() -> AsyncIterator[LifespanContext]:
 
         # Initialize AsyncWebCrawler
         logger.info("Initializing AsyncWebCrawler.")
-        # Minimal browser config for now, can be expanded via env vars if needed
-        browser_config = BrowserConfig(headless=True, browser_type="chromium") 
-        crawler_instance = AsyncWebCrawler(browser_config=browser_config)
+        # Initialize without explicit browser_config to avoid parameter duplication
+        crawler_instance = AsyncWebCrawler()
         logger.info("AsyncWebCrawler initialized.")
 
         # Initialize LogAccessor

@@ -62,17 +62,43 @@ async def get_embedding(text: str) -> Optional[List[float]]:
             
         response = requests.post(
             embedding_server_url,
-            json={"text": text}
+            json={"inputs": text}
         )
         response.raise_for_status()
         embedding_response = response.json()
         
-        # The actual key might differ based on your embedding server's output format
-        if "embedding" in embedding_response:
-            return embedding_response["embedding"]
+        # TEI server for single input might return: [[0.1, 0.2, ...]]
+        # or a dict like {"embedding": [0.1, 0.2, ...]} or {"embeddings": [[0.1, 0.2, ..]]}
+        # We need to ensure we return a flat List[float]
+
+        if isinstance(embedding_response, list):
+            if len(embedding_response) > 0 and isinstance(embedding_response[0], list):
+                # It's likely [[vector]], so return the first vector
+                logger.debug(f"Embedding server returned list of lists for single text, taking first element.")
+                return embedding_response[0]
+            else:
+                # It might be a flat list already, or an error/unexpected format
+                logger.warning(f"Embedding server returned a list for single text, but not a list of lists. Response: {embedding_response}")
+                return None # Or handle as error
+        elif isinstance(embedding_response, dict) and "embedding" in embedding_response:
+            # Handling for a dict with an "embedding" key that is a flat list
+            if isinstance(embedding_response["embedding"], list):
+                 logger.debug(f"Embedding server returned dict with flat list at key 'embedding'.")
+                 return embedding_response["embedding"]
+            else:
+                logger.warning(f"Embedding server returned dict with 'embedding' key, but value is not a list. Response: {embedding_response}")
+                return None
+        elif isinstance(embedding_response, dict) and "embeddings" in embedding_response:
+            # Handling for a dict with an "embeddings" key (which should be list of lists)
+            if isinstance(embedding_response["embeddings"], list) and len(embedding_response["embeddings"]) > 0 and isinstance(embedding_response["embeddings"][0], list):
+                logger.debug(f"Embedding server returned dict with list of lists at key 'embeddings', taking first element.")
+                return embedding_response["embeddings"][0]
+            else:
+                logger.warning(f"Embedding server returned dict with 'embeddings' key, but not a list of lists of vectors. Response: {embedding_response}")
+                return None
         else:
-            # If the embedding is the direct response (depends on your server API design)
-            return embedding_response
+            logger.warning(f"Unexpected embedding server response format for single text: {embedding_response}")
+            return None
             
     except requests.RequestException as e:
         logger.error(f"Error requesting embedding from server: {e}")
@@ -143,10 +169,15 @@ async def create_embeddings_batch(texts: List[str]) -> List[Optional[List[float]
         try:
             response = requests.post(
                 embedding_server_url,
-                json={"texts": batch}
+                json={"inputs": batch}
             )
             response.raise_for_status()
             batch_embeddings = response.json()
+            logger.debug(f"Successfully received response from embedding server. Type: {type(batch_embeddings)}")
+            if isinstance(batch_embeddings, dict):
+                logger.debug(f"Embedding server response keys: {list(batch_embeddings.keys())}")
+            elif isinstance(batch_embeddings, list) and len(batch_embeddings) > 0:
+                logger.debug(f"Embedding server response is a list of {len(batch_embeddings)} items. First item type: {type(batch_embeddings[0])}")
             
             # The actual structure might differ based on your embedding server's output format
             if isinstance(batch_embeddings, list):

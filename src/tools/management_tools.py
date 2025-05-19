@@ -15,7 +15,8 @@ from ..mcp_setup import mcp
 from ..utils.qdrant_utils import (
     get_available_sources as get_available_sources_util, # Alias
     get_collection_stats as get_collection_stats_util,   # Alias
-    get_qdrant_client # Added import
+    get_qdrant_client, # Added import
+    query_qdrant # Added import
 )
 # Import logging utilities
 from ..utils.logging_utils import get_logger
@@ -23,23 +24,18 @@ from ..utils.logging_utils import get_logger
 # Initialize logger
 logger = get_logger(__name__)
 
-@mcp.resource()
-async def get_available_sources(ctx: Context) -> List[str]:
+# Convert to tool instead of resource since it doesn't need URI parameters
+@mcp.tool()
+async def get_available_sources(ctx: Optional[Context] = None) -> List[str]:
     """
     Get all available sources based on unique source metadata values.
-    Accessible via resource URI: resource://get_available_sources
     """
     qdrant_client_instance = None
     collection_name_str = None
 
-    try:
-        if hasattr(ctx, 'request_context') and ctx.request_context is not None:
-            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
-            collection_name_str = ctx.request_context.lifespan_context.collection_name
-        else:
-            raise AttributeError("request_context not available for get_available_sources")
-    except (AttributeError, ValueError) as e:
-        logger.warning(f"Context access failed for get_available_sources ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
+    # Handle case when ctx is None or empty
+    if ctx is None or not hasattr(ctx, 'request_context') or ctx.request_context is None:
+        logger.warning("Context not available for get_available_sources. Initializing Qdrant from environment.")
         try:
             qdrant_client_instance = get_qdrant_client()
             collection_name_str = os.getenv("QDRANT_COLLECTION")
@@ -48,6 +44,22 @@ async def get_available_sources(ctx: Context) -> List[str]:
         except Exception as e_init:
             logger.error(f"Failed to initialize Qdrant: {e_init}")
             raise ResourceError(message=f"Failed to initialize Qdrant: {str(e_init)}", code="INITIALIZATION_ERROR", details={"original_exception": str(e_init)})
+    else:
+        try:
+            # Try to get client and default collection name from context
+            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
+            collection_name_str = ctx.request_context.lifespan_context.collection_name
+            logger.debug("Using Qdrant client and collection name from context")
+        except (AttributeError, ValueError) as e:
+            logger.warning(f"Context access failed for get_available_sources ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
+            try:
+                qdrant_client_instance = get_qdrant_client()
+                collection_name_str = os.getenv("QDRANT_COLLECTION")
+                if not collection_name_str:
+                    raise ResourceError(message="QDRANT_COLLECTION environment variable must be set when context is not available.", code="CONFIG_ERROR")
+            except Exception as e_init:
+                logger.error(f"Failed to initialize Qdrant: {e_init}")
+                raise ResourceError(message=f"Failed to initialize Qdrant: {str(e_init)}", code="INITIALIZATION_ERROR", details={"original_exception": str(e_init)})
 
     if not all([qdrant_client_instance, collection_name_str]):
         logger.error("Qdrant client or collection name missing for get_available_sources.")
@@ -65,36 +77,43 @@ async def get_available_sources(ctx: Context) -> List[str]:
         logger.error(f"Error in get_available_sources: {e}")
         raise ResourceError(message=f"Error getting available sources: {str(e)}", code="QDRANT_ERROR", details={"original_exception": str(e)})
 
-@mcp.resource()
+# Convert to tool instead of resource since it doesn't need URI parameters
+@mcp.tool()
 async def get_collection_stats(
-    ctx: Context,
+    ctx: Optional[Context] = None,
     collection_name: Optional[str] = None,
     include_segments: bool = False
 ) -> dict:
     """
     Get statistics about a Qdrant collection or all collections.
-    Accessible via resource URI: resource://get_collection_stats (for default)
-    or resource://get_collection_stats/{collection_name}?include_segments={true|false}
     """
     qdrant_client_instance = None
     default_collection_name_from_context_or_env = None
 
-    try:
-        # Try to get client and default collection name from context
-        if hasattr(ctx, 'request_context') and ctx.request_context is not None:
-            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
-            default_collection_name_from_context_or_env = ctx.request_context.lifespan_context.collection_name
-        else:
-            raise AttributeError("request_context not available for get_collection_stats") # Force fallback
-    except (AttributeError, ValueError) as e: # Catch ValueError here too
-        # Context is not available or not structured as expected (e.g., direct call with ctx={})
-        logger.warning(f"Context access failed for get_collection_stats ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
+    # Handle case when ctx is None or empty
+    if ctx is None or not hasattr(ctx, 'request_context') or ctx.request_context is None:
+        logger.warning("Context not available for get_collection_stats. Initializing Qdrant from environment.")
         try:
             qdrant_client_instance = get_qdrant_client() # From qdrant_utils
             default_collection_name_from_context_or_env = os.getenv("QDRANT_COLLECTION") # Changed from QDRANT_COLLECTION_NAME
         except Exception as e_client:
             logger.error(f"Failed to initialize Qdrant client: {e_client}")
             raise ResourceError(message=f"Failed to initialize Qdrant client: {str(e_client)}", code="INITIALIZATION_ERROR", details={"original_exception": str(e_client)})
+    else:
+        try:
+            # Try to get client and default collection name from context
+            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
+            default_collection_name_from_context_or_env = ctx.request_context.lifespan_context.collection_name
+            logger.debug("Using Qdrant client and collection name from context")
+        except (AttributeError, ValueError) as e: # Catch ValueError here too
+            # Context is not available or not structured as expected (e.g., direct call with ctx={})
+            logger.warning(f"Context access failed for get_collection_stats ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
+            try:
+                qdrant_client_instance = get_qdrant_client() # From qdrant_utils
+                default_collection_name_from_context_or_env = os.getenv("QDRANT_COLLECTION") # Changed from QDRANT_COLLECTION_NAME
+            except Exception as e_client:
+                logger.error(f"Failed to initialize Qdrant client: {e_client}")
+                raise ResourceError(message=f"Failed to initialize Qdrant client: {str(e_client)}", code="INITIALIZATION_ERROR", details={"original_exception": str(e_client)})
 
     if not qdrant_client_instance:
         # This case should ideally be covered by the try-except block above
@@ -143,5 +162,111 @@ async def get_collection_stats(
     except Exception as e:
         logger.error(f"Error in get_collection_stats tool: {e}")
         raise ResourceError(message=f"Error in get_collection_stats: {str(e)}", code="PROCESSING_ERROR", details={"original_exception": str(e)})
+
+# Ensure the file ends with a newline for linters 
+
+@mcp.tool()
+async def perform_rag_query(query: str, source: Optional[str] = None, match_count: int = 5, ctx: Optional[Context] = None) -> str:
+    """
+    Perform a RAG (Retrieval Augmented Generation) query on the stored content.
+    Args:
+        query: The search query.
+        source: Optional source domain to filter results (e.g., 'example.com').
+        match_count: Maximum number of results to return (default: 5).
+        ctx: The MCP server provided context (optional).
+    """
+    qdrant_client_instance = None
+    collection_name_str = None
+
+    # Create a dummy ctx.log and ctx.report_progress if ctx is None
+    class DummyLogger:
+        def info(self, message):
+            logger.info(message)
+        def debug(self, message):
+            logger.debug(message)
+        def warning(self, message):
+            logger.warning(message)
+        def error(self, message):
+            logger.error(message)
+    
+    class DummyContext:
+        def __init__(self):
+            self.log = DummyLogger()
+        
+        def report_progress(self, progress, total, message=None, parent_step=None, total_parent_steps=None):
+            logger.info(f"Progress: {progress}/{total} - {message if message else ''}")
+    
+    # If ctx is None, create a dummy context
+    if ctx is None:
+        ctx = DummyContext()
+        logger.warning("Context not available for perform_rag_query. Using dummy context.")
+
+    # Handle case when ctx is empty or doesn't have request_context
+    if not hasattr(ctx, 'request_context') or ctx.request_context is None:
+        logger.warning("No request_context available. Initializing components from environment.")
+        try:
+            qdrant_client_instance = get_qdrant_client()
+            collection_name_str = os.getenv("QDRANT_COLLECTION")
+            if not collection_name_str:
+                raise ValueError("QDRANT_COLLECTION environment variable must be set when context is not available.")
+        except Exception as e_init:
+            logger.error(f"Failed to initialize Qdrant: {e_init}")
+            raise ResourceError(f"Failed to initialize Qdrant: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
+    else:
+        try:
+            # Try to get instances from context
+            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
+            collection_name_str = ctx.request_context.lifespan_context.collection_name
+        except (AttributeError, ValueError) as e:
+            logger.warning(f"Context access failed for perform_rag_query ({type(e).__name__}: {e}). Initializing components from environment.")
+            try:
+                qdrant_client_instance = get_qdrant_client()
+                collection_name_str = os.getenv("QDRANT_COLLECTION")
+                if not collection_name_str:
+                    raise ValueError("QDRANT_COLLECTION environment variable must be set when context is not available.")
+            except Exception as e_init:
+                logger.error(f"Failed to initialize Qdrant: {e_init}")
+                raise ResourceError(f"Failed to initialize Qdrant: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
+
+    if not all([qdrant_client_instance, collection_name_str]):
+        logger.error("Qdrant client or collection name missing for perform_rag_query.")
+        raise ResourceError(message="Qdrant client or collection name missing for perform_rag_query.", code="MISSING_DEPENDENCY")
+
+    try:
+        logger.debug(f"Performing RAG query with query '{query}', source '{source}', and match_count '{match_count}'")
+        query_result = await query_qdrant(
+            client=qdrant_client_instance,
+            collection_name=collection_name_str,
+            query_text=query,
+            source_filter=source,
+            match_count=match_count
+        )
+
+        if not query_result:
+            logger.warning(f"No results found for query: '{query}'")
+            return json.dumps({
+                "success": True,
+                "query": query,
+                "match_count": 0,
+                "matches": []
+            }, indent=2)
+
+        # Format and return the result
+        formatted_result = {
+            "success": True,
+            "query": query,
+            "match_count": len(query_result),
+            "matches": query_result
+        }
+        
+        logger.info(f"RAG query complete: '{query}'. Found {len(query_result)} matches.")
+        return json.dumps(formatted_result, indent=2)
+    except Exception as e:
+        logger.error(f"Error in perform_rag_query: {e}")
+        raise ResourceError(
+            f"Error in perform_rag_query: {str(e)}",
+            "PROCESSING_ERROR",
+            details={"original_exception": str(e)}
+        )
 
 # Ensure the file ends with a newline for linters 

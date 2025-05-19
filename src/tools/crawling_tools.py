@@ -108,7 +108,7 @@ async def _process_and_store_single_repo_file(
     return file_summary
 
 @mcp.tool()
-async def crawl_single_page(ctx: Context, url: str) -> str:
+async def crawl_single_page(url: str, ctx: Optional[Context] = None) -> str:
     """
     Crawl a single web page and store its content in Qdrant.
     
@@ -116,8 +116,8 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
     The content is stored in Qdrant for later retrieval and querying.
     
     Args:
-        ctx: The MCP server provided context
         url: URL of the web page to crawl
+        ctx: The MCP server provided context (optional)
     
     Returns:
         Summary of the crawling operation and storage in Qdrant
@@ -129,21 +129,32 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
     # Flag to indicate if we initialized the crawler in this tool call
     crawler_initialized_here = False
 
-    try:
-        # Try to get instances from context
-        # This might raise ValueError if ctx.request_context is accessed inappropriately,
-        # or AttributeError if subsequent attributes are missing.
-        if hasattr(ctx, 'request_context') and ctx.request_context is not None: # Check first
-            crawler_instance = ctx.request_context.lifespan_context.crawler
-            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
-            collection_name_str = ctx.request_context.lifespan_context.collection_name
-            logger.debug("Using components from request context lifespan")
-        else:
-            # Force fallback if request_context itself is not usable
-            raise AttributeError("request_context not available on ctx object for crawl_single_page")
-            
-    except (AttributeError, ValueError) as e: # Catch both expected errors
-        logger.warning(f"Context access failed for crawl_single_page ({type(e).__name__}: {e}). Initializing components from environment.")
+    # Create a dummy ctx.log and ctx.report_progress if ctx is None
+    class DummyLogger:
+        def info(self, message):
+            logger.info(message)
+        def debug(self, message):
+            logger.debug(message)
+        def warning(self, message):
+            logger.warning(message)
+        def error(self, message):
+            logger.error(message)
+    
+    class DummyContext:
+        def __init__(self):
+            self.log = DummyLogger()
+        
+        def report_progress(self, progress, total, message=None, parent_step=None, total_parent_steps=None):
+            logger.info(f"Progress: {progress}/{total} - {message if message else ''}")
+    
+    # If ctx is None, create a dummy context
+    if ctx is None:
+        ctx = DummyContext()
+        logger.warning("Context not available for crawl_single_page. Using dummy context.")
+
+    # Handle case when ctx is empty or doesn't have request_context
+    if not hasattr(ctx, 'request_context') or ctx.request_context is None:
+        logger.warning("No request_context available. Initializing components from environment.")
         try:
             # Initialize AsyncWebCrawler
             # Create browser configuration for standalone crawler
@@ -161,21 +172,55 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
             if not collection_name_str:
                 logger.error("QDRANT_COLLECTION environment variable must be set")
                 # Changed error handling
-                raise ToolError(message="QDRANT_COLLECTION environment variable must be set when context is not available.", code="CONFIG_ERROR")
+                raise ToolError(f"QDRANT_COLLECTION environment variable must be set when context is not available.", "CONFIG_ERROR")
             logger.debug(f"Using Qdrant client from environment with collection {collection_name_str}")
         except Exception as e_init:
             logger.error(f"Failed to initialize components: {e_init}")
             if crawler_initialized_here and crawler_instance:
                 await crawler_instance.__aexit__(None, None, None) # Ensure cleanup if init fails mid-way
             # Changed error handling
-            raise ToolError(message=f"Failed to initialize components: {str(e_init)}", code="INITIALIZATION_ERROR", details={"original_exception": str(e_init)})
+            raise ToolError(f"Failed to initialize components: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
+    else:
+        try:
+            # Try to get instances from context
+            crawler_instance = ctx.request_context.lifespan_context.crawler
+            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
+            collection_name_str = ctx.request_context.lifespan_context.collection_name
+            logger.debug("Using components from request context lifespan")
+        except (AttributeError, ValueError) as e: # Catch both expected errors
+            logger.warning(f"Context access failed for crawl_single_page ({type(e).__name__}: {e}). Initializing components from environment.")
+            try:
+                # Initialize AsyncWebCrawler
+                # Create browser configuration for standalone crawler
+                browser_config = BrowserConfig(
+                    headless=True,
+                    verbose=os.getenv("CRAWLER_VERBOSE", "False").lower() == "true"
+                )
+                crawler_instance = AsyncWebCrawler(config=browser_config)
+                await crawler_instance.__aenter__() # Manually enter context
+                crawler_initialized_here = True
+                logger.debug("Initialized standalone crawler")
+
+                qdrant_client_instance = get_qdrant_client()
+                collection_name_str = os.getenv("QDRANT_COLLECTION")
+                if not collection_name_str:
+                    logger.error("QDRANT_COLLECTION environment variable must be set")
+                    # Changed error handling
+                    raise ToolError(f"QDRANT_COLLECTION environment variable must be set when context is not available.", "CONFIG_ERROR")
+                logger.debug(f"Using Qdrant client from environment with collection {collection_name_str}")
+            except Exception as e_init:
+                logger.error(f"Failed to initialize components: {e_init}")
+                if crawler_initialized_here and crawler_instance:
+                    await crawler_instance.__aexit__(None, None, None) # Ensure cleanup if init fails mid-way
+                # Changed error handling
+                raise ToolError(f"Failed to initialize components: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
 
     if not all([crawler_instance, qdrant_client_instance, collection_name_str]):
         logger.error("One or more critical components (crawler, qdrant client, collection name) could not be initialized")
         if crawler_initialized_here and crawler_instance: # Ensure cleanup if already entered
             await crawler_instance.__aexit__(None, None, None)
         # Changed error handling
-        raise ToolError(message="One or more critical components (crawler, qdrant client, collection name) could not be initialized.", code="MISSING_DEPENDENCY")
+        raise ToolError(f"One or more critical components (crawler, qdrant client, collection name) could not be initialized.", "MISSING_DEPENDENCY")
 
     try:
         ctx.log.info(f"Crawling page: {url}")
@@ -183,40 +228,44 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
         logger.info(f"Crawling page: {url}")
         # Configure crawler run for single page
         run_config = CrawlerRunConfig(
-            timeout=60,  # Reasonable timeout for single page
-            max_retries=2,  # Retry logic
-            handle_javascript=True,  # Handle JavaScript rendering
-            cache_mode=CacheMode.SKIP_CACHE  # Skip cache for direct calls
+            page_timeout=60000,  # Increased timeout to 60 seconds (was 60)
+            cache_mode=CacheMode.BYPASS  # Bypass cache for direct calls
         )
         
         # Get the raw HTML or content from the web page
-        response = await crawler_instance.get_page_content(url, config=run_config)
+        # Assuming arun might return a list of results, even for a single URL
+        results_list = await crawler_instance.arun(url, config=run_config)
         
-        if not response.content:
-            logger.warning(f"No content retrieved from URL: {url}")
-            # Changed error handling
-            raise ToolError(message=f"No content retrieved from URL: {url}", code="NO_CONTENT")
+        response = None
+        if results_list and isinstance(results_list, list) and len(results_list) > 0:
+            response = results_list[0] # Take the first result
+            logger.debug(f"Response type from arun (first element): {type(response)}")
+        elif results_list: # This block should catch the single CrawlResultContainer
+            response = results_list 
+            logger.debug(f"Response type from arun (direct object): {type(response)}")
+        
+        # Check for markdown attribute for content
+        if not response or not hasattr(response, 'markdown') or not response.markdown:
+            logger.warning(f"No markdown content retrieved from URL: {url}. Response status: {response.status_code if hasattr(response, 'status_code') else 'N/A'}, Error: {response.error_message if hasattr(response, 'error_message') else 'N/A'}")
+            raise ToolError(f"No markdown content retrieved from URL: {url}", "NO_CONTENT")
         else:
-            logger.debug(f"Successfully retrieved content from {url} ({len(response.content)} bytes)")
+            # Use response.markdown for further processing
+            logger.debug(f"Successfully retrieved markdown content from {url} ({len(response.markdown)} bytes)")
             ctx.report_progress(2, 3, f"Processing content from {url}")
             
             # Convert to chunks with metadata
-            chunks_data_for_qdrant = await smart_chunk_markdown(
-                raw_content=response.content,
-                url=url,
-                source_name=None,  # Will use domain from URL
-                crawler=crawler_instance,
-                chunk_size=MARKDOWN_CHUNK_SIZE,  # Use environment-configured size
-                filter_empty=True,  # Skip empty chunks
-                include_metadata=True,  # Include metadata in payload
-                get_title=True  # Attempt to extract page title
+            raw_chunks = smart_chunk_markdown(
+                text=response.markdown,
+                chunk_size=MARKDOWN_CHUNK_SIZE,
             )
             
-            if not chunks_data_for_qdrant:
+            if not raw_chunks:
                 logger.warning(f"No content chunks generated for URL: {url}")
-                # Changed error handling
-                raise ToolError(message=f"No content chunks generated for URL: {url}", code="NO_CHUNKS")
+                raise ToolError(f"No content chunks generated for URL: {url}", "NO_CHUNKS")
             else:
+                # Transform List[str] to List[Dict[str, Any]] for store_embeddings
+                chunks_data_for_qdrant = [{"text": chunk_str} for chunk_str in raw_chunks]
+
                 # Store embeddings in Qdrant
                 ctx.log.info(f"Storing {len(chunks_data_for_qdrant)} chunks from {url}")
                 ctx.report_progress(3, 3, f"Storing {len(chunks_data_for_qdrant)} chunks from {url}")
@@ -242,7 +291,7 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
     except Exception as e:
         logger.error(f"Error during crawl_single_page for {url}: {str(e)}")
         # Changed error handling
-        raise ToolError(message=f"Error during crawl_single_page for {url}: {str(e)}", code="CRAWL_ERROR", details={"url": url, "original_exception": str(e)})
+        raise ToolError(f"Error during crawl_single_page for {url}: {str(e)}", "CRAWL_ERROR", {"url": url, "original_exception": str(e)})
     finally:
         # Only clean up crawler if we initialized it in this call
         if crawler_initialized_here and crawler_instance:
@@ -254,19 +303,18 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
 
 @mcp.tool()
 async def crawl_repo(
-    ctx: Context,
     repo_url: str,
     branch: Optional[str] = None,
     chunk_size: Optional[int] = None,      # User can override
     chunk_overlap: Optional[int] = None,   # User can override
     ignore_dirs: Optional[List[str]] = None, # New: Directories/patterns to ignore
-    allowed_extensions: Optional[List[str]] = None # New: Specific file extensions to process
+    allowed_extensions: Optional[List[str]] = None, # New: Specific file extensions to process
+    ctx: Optional[Context] = None
 ) -> str:
     """
     Clones a Git repository, processes specified file types (based on filters), and stores their content in Qdrant.
 
     Args:
-        ctx: The MCP server provided context.
         repo_url: URL of the Git repository to crawl.
         branch: Optional specific branch to clone. Defaults to the repository's default branch.
         chunk_size: Size of each text chunk in characters for processing. Defaults to CHUNK_SIZE from crawling_utils.
@@ -274,10 +322,34 @@ async def crawl_repo(
         ignore_dirs: Optional list of directory names or path patterns to ignore (e.g., [".git", "node_modules", "dist/"]).
         allowed_extensions: Optional list of file extensions to process (e.g., [".py", ".js", ".md"]).
                           If None or empty, all files not in ignored_dirs will be considered (after extension check).
+        ctx: The MCP server provided context (optional).
 
     Returns:
         JSON string with crawl summary and storage information.
     """
+    # Create a dummy ctx.log and ctx.report_progress if ctx is None
+    class DummyLogger:
+        def info(self, message):
+            logger.info(message)
+        def debug(self, message):
+            logger.debug(message)
+        def warning(self, message):
+            logger.warning(message)
+        def error(self, message):
+            logger.error(message)
+    
+    class DummyContext:
+        def __init__(self):
+            self.log = DummyLogger()
+        
+        def report_progress(self, progress, total, message=None, parent_step=None, total_parent_steps=None):
+            logger.info(f"Progress: {progress}/{total} - {message if message else ''}")
+    
+    # If ctx is None, create a dummy context
+    if ctx is None:
+        ctx = DummyContext()
+        logger.warning("Context not available for crawl_repo. Using dummy context.")
+
     effective_chunk_size = chunk_size if chunk_size is not None else CHUNK_SIZE
     effective_chunk_overlap = chunk_overlap if chunk_overlap is not None else CHUNK_OVERLAP
     
@@ -311,11 +383,11 @@ async def crawl_repo(
                 raise ValueError("QDRANT_COLLECTION environment variable must be set when context is not available.")
         except Exception as e_init:
             # Changed error handling
-            raise ToolError(message=f"Failed to initialize Qdrant components: {str(e_init)}", code="INITIALIZATION_ERROR", details={"original_exception": str(e_init)})
+            raise ToolError(f"Failed to initialize Qdrant components: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
 
     if not all([qdrant_client_instance, collection_name_str]):
         # Changed error handling
-        raise ToolError(message="Qdrant client or collection name could not be initialized.", code="MISSING_DEPENDENCY")
+        raise ToolError(f"Qdrant client or collection name could not be initialized.", "MISSING_DEPENDENCY")
 
     try:
         ctx.log.info(f"Starting repository crawl for {repo_url}")
@@ -334,7 +406,7 @@ async def crawl_repo(
             if process.returncode != 0:
                 error_message = process.stderr or process.stdout or "Unknown git clone error"
                 # Changed error handling
-                raise ToolError(message=f"Git clone failed: {error_message.strip()}", code="GIT_CLONE_ERROR", details={"repo_url": repo_url, "stderr": process.stderr, "stdout": process.stdout})
+                raise ToolError(f"Git clone failed: {error_message.strip()}", "GIT_CLONE_ERROR", {"repo_url": repo_url, "stderr": process.stderr, "stdout": process.stdout})
 
             all_file_paths_to_process = []
             ctx.log.info(f"Identifying files to process...")
@@ -450,14 +522,18 @@ async def crawl_repo(
     except Exception as e:
         # Changed error handling
         logger.error(f"An unexpected error occurred in crawl_repo: {str(e)}", exc_info=True)
-        raise ToolError(message=f"An unexpected error occurred in crawl_repo: {str(e)}", code="REPO_CRAWL_UNEXPECTED_ERROR", details={"repo_url": repo_url, "original_exception": str(e)})
+        raise ToolError(f"An unexpected error occurred in crawl_repo: {str(e)}", "REPO_CRAWL_UNEXPECTED_ERROR", {"repo_url": repo_url, "original_exception": str(e)})
 
 @mcp.tool()
-async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concurrent: int = 30, chunk_size: Optional[int] = None) -> str:
+async def smart_crawl_url(url: str, max_depth: int = 3, max_concurrent: int = 30, chunk_size: Optional[int] = None, ctx: Optional[Context] = None) -> str:
     """
     Intelligently crawl a URL based on its type and store content in Qdrant.
     Args:
+        url: URL to crawl
+        max_depth: Maximum depth for recursive crawls (default: 3)
+        max_concurrent: Maximum concurrent requests (default: 30)
         chunk_size: Max size of each markdown content chunk. Defaults to MARKDOWN_CHUNK_SIZE from crawling_utils.
+        ctx: The MCP server provided context (optional)
     """
     effective_markdown_chunk_size = chunk_size if chunk_size is not None else MARKDOWN_CHUNK_SIZE
     
@@ -466,17 +542,32 @@ async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concur
     collection_name_str = None
     crawler_initialized_here = False # Flag for standalone crawler cleanup
 
-    try:
-        # Try to get instances from context
-        if hasattr(ctx, 'request_context') and ctx.request_context is not None:
-            crawler_instance = ctx.request_context.lifespan_context.crawler
-            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
-            collection_name_str = ctx.request_context.lifespan_context.collection_name
-        else:
-            raise AttributeError("request_context not available on ctx object for smart_crawl_url")
-            
-    except (AttributeError, ValueError) as e: # Catch both expected errors
-        logger.warning(f"Context access failed for smart_crawl_url ({type(e).__name__}: {e}). Initializing components from environment.")
+    # Create a dummy ctx.log and ctx.report_progress if ctx is None
+    class DummyLogger:
+        def info(self, message):
+            logger.info(message)
+        def debug(self, message):
+            logger.debug(message)
+        def warning(self, message):
+            logger.warning(message)
+        def error(self, message):
+            logger.error(message)
+    
+    class DummyContext:
+        def __init__(self):
+            self.log = DummyLogger()
+        
+        def report_progress(self, progress, total, message=None, parent_step=None, total_parent_steps=None):
+            logger.info(f"Progress: {progress}/{total} - {message if message else ''}")
+    
+    # If ctx is None, create a dummy context
+    if ctx is None:
+        ctx = DummyContext()
+        logger.warning("Context not available for smart_crawl_url. Using dummy context.")
+
+    # Handle case when ctx is empty or doesn't have request_context
+    if not hasattr(ctx, 'request_context') or ctx.request_context is None:
+        logger.warning("No request_context available. Initializing components from environment.")
         try:
             browser_config = BrowserConfig(
                 headless=True,
@@ -494,13 +585,40 @@ async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concur
             if crawler_initialized_here and crawler_instance:
                 await crawler_instance.__aexit__(None, None, None)
             # Changed error handling
-            raise ToolError(message=f"Failed to initialize components: {str(e_init)}", code="INITIALIZATION_ERROR", details={"original_exception": str(e_init)})
+            raise ToolError(f"Failed to initialize components: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
+    else:
+        try:
+            # Try to get instances from context
+            crawler_instance = ctx.request_context.lifespan_context.crawler
+            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
+            collection_name_str = ctx.request_context.lifespan_context.collection_name
+            logger.debug("Using components from request context lifespan")
+        except (AttributeError, ValueError) as e: # Catch both expected errors
+            logger.warning(f"Context access failed for smart_crawl_url ({type(e).__name__}: {e}). Initializing components from environment.")
+            try:
+                browser_config = BrowserConfig(
+                    headless=True,
+                    verbose=os.getenv("CRAWLER_VERBOSE", "False").lower() == "true"
+                )
+                crawler_instance = AsyncWebCrawler(config=browser_config)
+                await crawler_instance.__aenter__()
+                crawler_initialized_here = True
+
+                qdrant_client_instance = get_qdrant_client()
+                collection_name_str = os.getenv("QDRANT_COLLECTION")
+                if not collection_name_str:
+                    raise ValueError("QDRANT_COLLECTION environment variable must be set when context is not available.")
+            except Exception as e_init:
+                if crawler_initialized_here and crawler_instance:
+                    await crawler_instance.__aexit__(None, None, None)
+                # Changed error handling
+                raise ToolError(f"Failed to initialize components: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
 
     if not all([crawler_instance, qdrant_client_instance, collection_name_str]):
         if crawler_initialized_here and crawler_instance:
             await crawler_instance.__aexit__(None, None, None)
         # Changed error handling
-        raise ToolError(message="One or more critical components (crawler, qdrant client, collection name) could not be initialized.", code="MISSING_DEPENDENCY")
+        raise ToolError(f"One or more critical components (crawler, qdrant client, collection name) could not be initialized.", "MISSING_DEPENDENCY")
 
     try:
         crawl_results = []
@@ -520,7 +638,7 @@ async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concur
             sitemap_urls = parse_sitemap(url)
             if not sitemap_urls:
                 # Changed error handling
-                raise ToolError(message=f"No URLs found in sitemap: {url}", code="SITEMAP_EMPTY")
+                raise ToolError(f"No URLs found in sitemap: {url}", "SITEMAP_EMPTY")
             ctx.log.info(f"Found {len(sitemap_urls)} URLs in sitemap. Starting batch crawl.")
             ctx.report_progress(2, 4, f"Batch crawling {len(sitemap_urls)} URLs from sitemap")
             crawl_results = await crawl_batch(crawler_instance, sitemap_urls, max_concurrent=max_concurrent)
@@ -535,7 +653,7 @@ async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concur
         ctx.report_progress(3, 4, "Processing crawled content")
         if not crawl_results:
             # Changed error handling
-            raise ToolError(message=f"No content found for URL {url} with type {crawl_type}", code="NO_CONTENT_FOUND")
+            raise ToolError(f"No content found for URL {url} with type {crawl_type}", "NO_CONTENT_FOUND")
         
         processed_urls = set()
         total_successful_chunks = 0
@@ -576,7 +694,7 @@ async def smart_crawl_url(ctx: Context, url: str, max_depth: int = 3, max_concur
     except Exception as e:
         # Changed error handling
         logger.error(f"Error during smart_crawl_url for {url}: {str(e)}", exc_info=True)
-        raise ToolError(message=f"Error during smart_crawl_url for {url}: {str(e)}", code="SMART_CRAWL_ERROR", details={"url": url, "original_exception": str(e)})
+        raise ToolError(f"Error during smart_crawl_url for {url}: {str(e)}", "SMART_CRAWL_ERROR", {"url": url, "original_exception": str(e)})
     finally:
         if crawler_initialized_here and crawler_instance:
             await crawler_instance.__aexit__(None, None, None)

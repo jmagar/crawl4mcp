@@ -335,22 +335,21 @@ async def query_qdrant(
     Query Qdrant for relevant documents.
     """
     logger.debug(f"Generating embedding for query: '{query_text}'")
-    # get_embedding will be imported from embedding_utils
     query_embedding = await get_embedding(query_text)
     if not query_embedding:
         logger.error(f"Could not generate embedding for query: '{query_text}'. Returning empty list.")
         return []
+    
+    logger.debug(f"Generated query_embedding for '{query_text}'. First 3 dims: {query_embedding[:3]} L2 norm: {sum(x*x for x in query_embedding)**0.5 if query_embedding else 'N/A'}")
 
-    # Use the new helper function to create a filter from source_filter
     qdrant_filter = create_qdrant_filter(source_filter=source_filter)
     
     if source_filter:
         logger.debug(f"Searching with source filter: {source_filter}")
 
     try:
-        logger.debug(f"Executing Qdrant search in collection '{collection_name}' with match_count={match_count}")
-        # client.search is synchronous
-        search_result = await asyncio.to_thread(
+        logger.debug(f"Executing Qdrant search in collection '{collection_name}' with match_count={match_count} and filter: {qdrant_filter}")
+        search_result_qdrant = await asyncio.to_thread(
             client.search,
             collection_name=collection_name,
             query_vector=query_embedding,
@@ -359,13 +358,17 @@ async def query_qdrant(
             with_payload=True
         )
         
-        # Use the new helper function for result formatting
+        logger.debug(f"Qdrant search returned {len(search_result_qdrant)} raw hits.")
+        if search_result_qdrant:
+            logger.debug(f"Top raw hit score: {search_result_qdrant[0].score}, ID: {search_result_qdrant[0].id}")
+            # logger.debug(f"Top raw hit payload: {search_result_qdrant[0].payload}") # Can be very verbose
+
         results = []
-        for hit in search_result:
+        for hit in search_result_qdrant:
             result = format_search_result(hit, search_type="semantic")
             results.append(result)
         
-        logger.info(f"Query completed with {len(results)} results")
+        logger.info(f"Query completed with {len(results)} formatted results")
         if results:
             logger.debug(f"Top result score: {results[0].get('similarity', 'N/A')}")
         return results
