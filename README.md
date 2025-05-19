@@ -1,4 +1,4 @@
-<h1 align="center">🚀 Crawl4AI RAG MCP Server 🚀</h1>
+<h1 align="center">🚀 Crawl4MCP RAG Server 🚀</h1>
 
 <p align="center">
   <em>Enhance AI Agents & Coding Assistants with Web Crawling 🕸️, RAG 🧠, and Analytics 📊 Capabilities!</em>
