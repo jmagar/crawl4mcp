@@ -186,8 +186,4 @@ uv pip install -e ".[visualization]"
 
 ## 🙌 Contributing
 
-<<<<<<< Updated upstream
-Contributions are highly welcome! Whether it's a bug report, feature request, or a pull request, please feel free to engage with the project.
-=======
 Contributions welcome! Please open an issue or PR.
->>>>>>> Stashed changes
