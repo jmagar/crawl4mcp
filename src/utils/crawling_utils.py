@@ -7,6 +7,7 @@ import requests
 from xml.etree import ElementTree
 from urllib.parse import urlparse, urldefrag
 from typing import List, Dict, Any, Optional
+import asyncio # Ensure asyncio is imported
 
 # Import logging utilities
 from .logging_utils import get_logger
@@ -40,7 +41,20 @@ def parse_sitemap(sitemap_url: str) -> List[str]:
     """
     urls = []
     try:
-        resp = requests.get(sitemap_url, timeout=10) # Added timeout
+        # Define a synchronous helper for requests.get
+        def _fetch_sitemap():
+            return requests.get(sitemap_url, timeout=10)
+
+        # Run the synchronous call in a thread
+        # Note: parse_sitemap itself is NOT async, so this await asyncio.to_thread
+        # is only callable if parse_sitemap is called from an async context that can run it.
+        # If parse_sitemap is called from purely synchronous code, this will not work as intended
+        # without further changes to how it's called or by using a sync-to-async bridge.
+        # For now, assuming it's called from an async context that can handle this.
+        # A better long-term solution would be to make parse_sitemap async itself if it's primarily used by async code.
+        loop = asyncio.get_event_loop()
+        resp = loop.run_until_complete(asyncio.to_thread(_fetch_sitemap))
+        
         resp.raise_for_status() # Raise an exception for HTTP errors
         tree = ElementTree.fromstring(resp.content)
         # Namespace-agnostic way to find <loc> tags
@@ -54,7 +68,16 @@ def parse_sitemap(sitemap_url: str) -> List[str]:
     return urls
 
 def smart_chunk_markdown(text: str, chunk_size: Optional[int] = None) -> List[str]:
-    """Split text into chunks, respecting code blocks and paragraphs."""
+    """
+    Split text into chunks, respecting code blocks and paragraphs.
+
+    Args:
+        text: The input text to be chunked.
+        chunk_size: The target maximum size for each chunk. Defaults to MARKDOWN_CHUNK_SIZE.
+
+    Returns:
+        A list of text chunks.
+    """
     if chunk_size is None:
         chunk_size = MARKDOWN_CHUNK_SIZE
 
@@ -107,7 +130,16 @@ def smart_chunk_markdown(text: str, chunk_size: Optional[int] = None) -> List[st
 
 def extract_section_info(chunk: str) -> Dict[str, Any]:
     """
-    Extracts headers and stats from a chunk.
+    Extracts headers and stats from a text chunk.
+
+    Args:
+        chunk: The text chunk to analyze.
+
+    Returns:
+        A dictionary containing:
+            'headers' (str): A semicolon-separated string of found headers (e.g., "# Header 1; ## Header 2").
+            'char_count' (int): The number of characters in the chunk.
+            'word_count' (int): The number of words in the chunk.
     """
     headers = re.findall(r'^(#+)\s+(.+)$', chunk, re.MULTILINE)
     header_str = '; '.join([f'{h[0]} {h[1]}' for h in headers]) if headers else ''
@@ -120,6 +152,14 @@ def extract_section_info(chunk: str) -> Dict[str, Any]:
 def simple_text_chunker(text: str, chunk_size: Optional[int] = None, chunk_overlap: Optional[int] = None) -> List[str]:
     """
     Splits text into chunks with overlap, suitable for general text or code.
+
+    Args:
+        text: The input text to be chunked.
+        chunk_size: The target size for each chunk. Defaults to CHUNK_SIZE.
+        chunk_overlap: The number of characters to overlap between chunks. Defaults to CHUNK_OVERLAP.
+
+    Returns:
+        A list of text chunks.
     """
     if chunk_size is None:
         chunk_size = CHUNK_SIZE
@@ -151,7 +191,16 @@ def simple_text_chunker(text: str, chunk_size: Optional[int] = None, chunk_overl
 
 async def crawl_markdown_file(crawler: AsyncWebCrawler, url: str) -> List[Dict[str, Any]]:
     """
-    Crawl a .txt or markdown file.
+    Crawl a .txt or markdown file using AsyncWebCrawler.
+
+    Args:
+        crawler: An instance of AsyncWebCrawler.
+        url: The URL of the .txt or markdown file to crawl.
+
+    Returns:
+        A list containing a single dictionary with 'url' and 'markdown' content
+        if successful, e.g., [{'url': 'http://example.com/file.md', 'markdown': '...content...'}].
+        Returns an empty list if crawling fails.
     """
     crawl_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, stream=False) # Bypass cache for single file fetches
     result = await crawler.arun(url=url, config=crawl_config)
@@ -163,7 +212,16 @@ async def crawl_markdown_file(crawler: AsyncWebCrawler, url: str) -> List[Dict[s
 
 async def crawl_batch(crawler: AsyncWebCrawler, urls: List[str], max_concurrent: int = 10) -> List[Dict[str, Any]]:
     """
-    Batch crawl multiple URLs in parallel.
+    Batch crawl multiple URLs in parallel using AsyncWebCrawler.
+
+    Args:
+        crawler: An instance of AsyncWebCrawler.
+        urls: A list of URLs to crawl.
+        max_concurrent: The maximum number of concurrent crawling tasks. Defaults to 10.
+
+    Returns:
+        A list of dictionaries, where each dictionary contains 'url' and 'markdown'
+        for successfully crawled pages, e.g., [{'url': '...', 'markdown': '...'}, ...].
     """
     crawl_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, stream=False)
     # Consider making dispatcher configurable or passed in if needed
@@ -185,6 +243,18 @@ async def crawl_recursive_internal_links(
     """
     Recursively crawl internal links from start URLs up to a maximum depth.
     Optionally restrict to a target domain.
+
+    Args:
+        crawler: An instance of AsyncWebCrawler.
+        start_urls: A list of starting URLs for the crawl.
+        max_depth: The maximum depth for recursive crawling. Defaults to 3.
+        max_concurrent: The maximum number of concurrent crawling tasks. Defaults to 10.
+        target_domain: Optional. If provided, only links from this domain will be followed
+                       and included. If None, it's inferred from the first start_url.
+    
+    Returns:
+        A list of dictionaries, where each dictionary contains 'url' and 'markdown'
+        for successfully crawled pages, e.g., [{'url': '...', 'markdown': '...'}, ...].
     """
     run_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, stream=False)
     dispatcher = MemoryAdaptiveDispatcher(

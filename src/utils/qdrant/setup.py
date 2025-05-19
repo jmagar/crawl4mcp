@@ -38,8 +38,16 @@ def get_qdrant_client() -> QdrantClient:
 
 async def ensure_qdrant_collection_async(client: QdrantClient, collection_name: str, vector_dim: int):
     """
-    Ensure that the specified collection exists in Qdrant.
-    This is an asynchronous version.
+    Ensure that the specified Qdrant collection exists, creating it if necessary.
+
+    This function first attempts to get the collection details. If the collection
+    is not found (e.g., due to a 404 error), it tries to create it with the
+    specified vector dimension and COSINE distance metric.
+
+    Args:
+        client: An initialized QdrantClient instance.
+        collection_name: The name of the collection to ensure existence of.
+        vector_dim: The dimension of the vectors to be stored in the collection.
     """
     try:
         # Try to get collection info. This might raise ResponseHandlingException if the

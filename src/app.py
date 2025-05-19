@@ -4,7 +4,6 @@ Main application file for the Crawl4AI MCP server.
 This file initializes the MCP server and registers all tools
 by importing the necessary modules.
 """
-import asyncio
 import os
 
 # Import logging utilities
@@ -26,8 +25,72 @@ from .tools import management_tools
 from .tools import analytics_tools
 
 # Log that all modules have been imported and registered
-logger.info("MCP server fully initialized with all tools registered")
-logger.debug(f"Registered tools: crawling_tools, retrieval_tools, management_tools, analytics_tools")
+logger.info("MCP server fully initialized with all tool modules imported.")
+
+# Enhanced logging for registered tools
+try:
+    tool_names_str_list = [] # This will store the final list of tool name strings
+
+    if hasattr(mcp, 'tool_manager') and mcp.tool_manager is not None:
+        # Try mcp.tool_manager.get_tools()
+        if hasattr(mcp.tool_manager, 'get_tools') and callable(mcp.tool_manager.get_tools):
+            registered_items = mcp.tool_manager.get_tools()
+            if isinstance(registered_items, dict):
+                for tool_name, tool_obj in registered_items.items():
+                    if hasattr(tool_obj, 'name') and isinstance(tool_obj.name, str):
+                        tool_names_str_list.append(tool_obj.name)
+                    elif isinstance(tool_name, str): # Fallback if tool_obj.name isn't there but key is string
+                        tool_names_str_list.append(tool_name)
+            elif isinstance(registered_items, list):
+                for item in registered_items:
+                    if hasattr(item, 'name') and isinstance(item.name, str):
+                        tool_names_str_list.append(item.name)
+                    elif isinstance(item, str):
+                        tool_names_str_list.append(item)
+            else:
+                logger.debug("mcp.tool_manager.get_tools() returned an unexpected type or empty.")
+        
+        # If get_tools() didn't yield names, try mcp.tool_manager.list_tools()
+        if not tool_names_str_list and hasattr(mcp.tool_manager, 'list_tools') and callable(mcp.tool_manager.list_tools):
+            logger.debug("Attempting to use mcp.tool_manager.list_tools().")
+            tool_objects_or_names = mcp.tool_manager.list_tools()
+            for item in tool_objects_or_names:
+                if hasattr(item, 'name') and isinstance(item.name, str):
+                    tool_names_str_list.append(item.name)
+                elif isinstance(item, str):
+                    tool_names_str_list.append(item)
+        
+        # If still no names, and _tool_manager exists, try mcp._tool_manager.list_tools()
+        if not tool_names_str_list and hasattr(mcp, '_tool_manager') and hasattr(mcp._tool_manager, 'list_tools') and callable(mcp._tool_manager.list_tools):
+            logger.warning("Accessing mcp._tool_manager.list_tools() as public methods on mcp.tool_manager did not yield tool names.")
+            tool_objects_or_names = mcp._tool_manager.list_tools()
+            for item in tool_objects_or_names:
+                if hasattr(item, 'name') and isinstance(item.name, str):
+                    tool_names_str_list.append(item.name)
+                elif isinstance(item, str):
+                    tool_names_str_list.append(item)
+
+    # Direct fallback if mcp.tool_manager attribute itself wasn't found, but _tool_manager exists
+    elif hasattr(mcp, '_tool_manager') and hasattr(mcp._tool_manager, 'list_tools') and callable(mcp._tool_manager.list_tools):
+        logger.warning("Accessing mcp._tool_manager directly to list tools as mcp.tool_manager was not found.")
+        tool_objects_or_names = mcp._tool_manager.list_tools()
+        for item in tool_objects_or_names:
+            if hasattr(item, 'name') and isinstance(item.name, str):
+                tool_names_str_list.append(item.name)
+            elif isinstance(item, str):
+                tool_names_str_list.append(item)
+    else:
+        logger.error("MCP tool_manager or _tool_manager not found or accessible using known methods. Cannot list registered tools.")
+
+    if tool_names_str_list:
+        # Remove duplicates and sort before logging
+        unique_sorted_tool_names = sorted(list(set(tool_names_str_list)))
+        logger.info(f"Successfully registered MCP tools: {', '.join(unique_sorted_tool_names)}")
+    else:
+        logger.warning("No MCP tool names successfully extracted.")
+            
+except Exception as e:
+    logger.error(f"Error retrieving registered tools: {e}", exc_info=True)
 
 # Export the mcp FastMCP instance as "app" for ASGI servers like uvicorn
 app = mcp.http_app()

@@ -15,5 +15,4 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-openai = ["openai==1.71.0"]
 visualization = ["scikit-learn>=1.4.0", "plotly>=5.20.0", "numpy>=1.26.0", "nltk>=3.8.1"]

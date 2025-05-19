@@ -174,6 +174,9 @@ Once the server is running, it exposes these tools (prefixes removed):
     *   `num_clusters: Optional[int]` (default: None, auto-determined) - Number of clusters to create. If None, an optimal number is attempted.
     *   `sample_size: Optional[int]` (default: None, uses 500 in util) - Maximum number of vectors to fetch for clustering.
     *   `include_visualization: bool` (default: False) - Whether to generate and include HTML for a t-SNE visualization of clusters.
+*   `view_server_logs(num_lines: Optional[int] = None)`
+    *   `num_lines: Optional[int]` (default: 100 lines as configured in `logging_utils.DEFAULT_LOG_LINES`) - Number of recent log lines to retrieve from `crawl4mcp.log`.
+    *   `ctx: Optional[Context]` - MCP Context object (usually injected by the server).
 
 ## 🧑‍💻 Development
 

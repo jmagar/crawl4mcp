@@ -46,9 +46,6 @@ mcp_path = os.getenv("PATH", DEFAULT_PATH_PREFIX)
 
 logger.debug(f"MCP server configuration - host: {mcp_host}, port: {mcp_port}, path prefix: {mcp_path}")
 
-# Define variables to store shared resources
-server_shared_resources = {}
-
 # Create a dataclass for our application context
 @dataclass
 class LifespanContext:
@@ -149,9 +146,6 @@ mcp = FastMCP(
     port=mcp_port,
     timeout=int(os.getenv("MCP_TIMEOUT", "1200")) # Ensure timeout is int
 )
-
-# Need to import models for VectorParams
-from qdrant_client.http import models
 
 server_name_for_print = os.getenv("MCP_SERVER_NAME", "crawl4mcp")
 host_for_print = mcp_host

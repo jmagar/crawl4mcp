@@ -227,9 +227,9 @@ async def perform_clustering(
             for k_candidate in range(2, k_upper_bound):
                 try:
                     kmeans_temp = KMeans(n_clusters=k_candidate, random_state=random_seed, n_init='auto')
-                    cluster_labels_temp = kmeans_temp.fit_predict(X)
+                    cluster_labels_temp = await asyncio.to_thread(kmeans_temp.fit_predict, X)
                     if len(set(cluster_labels_temp)) > 1: # Silhouette score requires more than 1 cluster
-                        score = silhouette_score(X, cluster_labels_temp)
+                        score = await asyncio.to_thread(silhouette_score, X, cluster_labels_temp)
                         silhouette_scores.append(score)
                         if score > highest_score:
                             highest_score = score
@@ -270,12 +270,12 @@ async def perform_clustering(
 
     try:
         kmeans = KMeans(n_clusters=actual_num_clusters, random_state=random_seed, n_init='auto')
-        cluster_labels_list = kmeans.fit_predict(X).tolist() # Ensure it's a list
+        cluster_labels_list = (await asyncio.to_thread(kmeans.fit_predict, X)).tolist() # Ensure it's a list
         
         current_silhouette_avg = None
         if actual_num_clusters > 1 and len(X) > actual_num_clusters: # Check if silhouette score can be calculated
             try:
-                current_silhouette_avg = float(silhouette_score(X, cluster_labels_list))
+                current_silhouette_avg = float(await asyncio.to_thread(silhouette_score, X, cluster_labels_list))
             except ValueError as sve:
                 logger.warning(f"Could not calculate silhouette score: {sve}")
                 current_silhouette_avg = None
@@ -308,7 +308,16 @@ async def perform_clustering(
 
 async def extract_cluster_themes(text: str, max_themes: int = 5) -> List[str]:
     """
-    Extract potential themes or keywords from cluster content.
+    Extract potential themes or keywords from a given text, typically representing content from a cluster.
+    Uses CountVectorizer to find frequent terms (unigrams and bigrams).
+
+    Args:
+        text: The input text from which to extract themes.
+        max_themes: The maximum number of themes/keywords to return. Defaults to 5.
+
+    Returns:
+        A list of strings, where each string is an extracted theme/keyword.
+        Returns an empty list if NLTK/Scikit-learn are unavailable, text is empty, or an error occurs.
     """
     if not NLTK_AVAILABLE or not CountVectorizer or not stopwords:
         logger.warning("NLTK or Scikit-learn not available, cannot extract themes.")
@@ -328,7 +337,7 @@ async def extract_cluster_themes(text: str, max_themes: int = 5) -> List[str]:
             ngram_range=(1, 2) 
         )
         
-        X_counts = vectorizer.fit_transform([text])
+        X_counts = await asyncio.to_thread(vectorizer.fit_transform, [text])
         words = vectorizer.get_feature_names_out()
         counts = X_counts.toarray()[0]
         
@@ -380,7 +389,7 @@ async def generate_cluster_visualization(
 
 
         tsne = TSNE(n_components=2, random_state=42, perplexity=tsne_perplexity, n_iter=300, learning_rate='auto', init='pca')
-        X_tsne = tsne.fit_transform(X_np)
+        X_tsne = await asyncio.to_thread(tsne.fit_transform, X_np)
         
         # Create a Plotly figure
         # Using plotly express for simplicity

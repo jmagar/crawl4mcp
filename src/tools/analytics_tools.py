@@ -25,7 +25,12 @@ from ..utils.logging_utils import get_logger
 # Initialize logger
 logger = get_logger(__name__)
 
-@mcp.tool()
+@mcp.tool(
+    annotations={
+        "title": "Perform Content Clustering",
+        "readOnlyHint": True,
+    }
+)
 async def cluster_content(
     ctx: Context,
     source_filter: Optional[str] = None,

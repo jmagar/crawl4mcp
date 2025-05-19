@@ -15,7 +15,7 @@ from qdrant_client.http.models import PointStruct
 from ..logging_utils import get_logger # Adjusted import path
 
 # Import embedding functions
-from ..embedding_utils import create_embeddings_batch # generate_contextual_embedding was unused by current store_embeddings
+from ..embedding_utils import create_embeddings_batch
 
 # Initialize logger
 logger = get_logger(__name__)
@@ -25,13 +25,26 @@ async def store_embeddings(
     collection_name: str,
     chunks: List[Dict[str, Any]],
     source_url: str,
-    crawl_type: str,
-    query_for_contextual_embedding: Optional[str] = None # Parameter kept for signature consistency, though logic is commented out
+    crawl_type: str
 ) -> Tuple[int, int]:
     """
     Store text chunks and their embeddings in Qdrant.
-    Uses the global EMBEDDING_SERVER_BATCH_SIZE for batching requests to the embedding server.
-    Qdrant upsert batch size is controlled by QDRANT_UPSERT_BATCH_SIZE environment variable.
+    
+    This function processes a list of text chunks, generates embeddings for them in batches,
+    and then upserts these points (embedding vector + payload) into the specified Qdrant collection.
+    Batch sizes for embedding generation and Qdrant upsert are controlled by environment variables
+    EMBEDDING_SERVER_BATCH_SIZE and QDRANT_UPSERT_BATCH_SIZE respectively.
+
+    Args:
+        client: An initialized QdrantClient instance.
+        collection_name: The name of the Qdrant collection to store embeddings in.
+        chunks: A list of dictionaries, where each dictionary represents a chunk of text
+                and should contain at least a "text" key. Other keys like "headers" might be used.
+        source_url: The original URL from which the chunks were derived.
+        crawl_type: A string indicating the type of crawl (e.g., 'single_page', 'sitemap').
+
+    Returns:
+        A tuple containing two integers: (successful_chunks, failed_chunks).
     """
     try:
         qdrant_upsert_batch_size = int(os.getenv("QDRANT_UPSERT_BATCH_SIZE", "64"))
@@ -50,12 +63,6 @@ async def store_embeddings(
     for i, chunk_data in enumerate(chunks):
         text_content = chunk_data.get("text", "")
         texts_to_embed.append(text_content)
-        # Original contextual embedding logic was commented out in qdrant_utils.py already:
-        # if query_for_contextual_embedding and openai and SUMMARIZATION_MODEL_CHOICE:
-        #     contextual_summary = await generate_contextual_embedding(text_content, source_url, query_for_contextual_embedding)
-        #     texts_to_embed.append(contextual_summary)
-        # else:
-        #     texts_to_embed.append(text_content)
 
     all_embeddings = await create_embeddings_batch(texts_to_embed)
 

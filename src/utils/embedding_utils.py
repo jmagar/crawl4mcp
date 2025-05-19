@@ -12,18 +12,6 @@ from .logging_utils import get_logger
 # Initialize logger
 logger = get_logger(__name__)
 
-# Attempt to import OpenAI and initialize if API key is present (for summarization)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-SUMMARIZATION_MODEL_CHOICE = os.getenv("SUMMARIZATION_MODEL_CHOICE")
-openai = None
-if OPENAI_API_KEY and SUMMARIZATION_MODEL_CHOICE:
-    try:
-        import openai as openai_client
-        openai_client.api_key = OPENAI_API_KEY
-        openai = openai_client
-    except ImportError:
-        logger.warning("OpenAI library not installed, but OPENAI_API_KEY and SUMMARIZATION_MODEL_CHOICE are set. Summarization will be disabled.")
-
 EMBEDDING_SERVER_URL = os.getenv("EMBEDDING_SERVER_URL")
 if not EMBEDDING_SERVER_URL:
     # This would ideally be a fatal error or have a fallback,
@@ -33,8 +21,8 @@ if not EMBEDDING_SERVER_URL:
 
 # New: Configurable batch size for embedding server requests
 EMBEDDING_SERVER_BATCH_SIZE = int(os.getenv("EMBEDDING_SERVER_BATCH_SIZE", "32"))
-# VECTOR_DIM is used as a fallback in create_embeddings_batch, so define it here or ensure it's globally available.
-# For module independence, let's define it here based on environment variable.
+# VECTOR_DIM (from environment variable, default 1024) is primarily used during Qdrant collection creation 
+# (see src/mcp_setup.py and src/utils/qdrant/setup.py). It is not used as a fallback in create_embeddings_batch.
 VECTOR_DIM = int(os.getenv("VECTOR_DIM", "1024"))
 
 
@@ -60,7 +48,8 @@ async def get_embedding(text: str) -> Optional[List[float]]:
             logger.error("EMBEDDING_SERVER_URL environment variable is not set.")
             return None
             
-        response = requests.post(
+        response = await asyncio.to_thread(
+            requests.post,
             embedding_server_url,
             json={"inputs": text}
         )
@@ -167,7 +156,8 @@ async def create_embeddings_batch(texts: List[str]) -> List[Optional[List[float]
         logger.debug(f"Processing embedding batch {i//batch_size + 1}/{(len(filtered_texts_list) + batch_size - 1)//batch_size}")
         
         try:
-            response = requests.post(
+            response = await asyncio.to_thread(
+                requests.post,
                 embedding_server_url,
                 json={"inputs": batch}
             )
@@ -204,40 +194,6 @@ async def create_embeddings_batch(texts: List[str]) -> List[Optional[List[float]
             # Leave as None for this batch
             
     return all_embeddings
-
-async def generate_contextual_embedding(text_chunk: str, source_url: str, query: str) -> str:
-    """
-    Generate a contextual embedding for a text chunk using the embedding server.
-    NOTE: This function creates a *summary* intended for later embedding, not the embedding itself.
-    The name might be slightly misleading; it generates text *for* contextual embedding.
-    """
-    if not openai or not SUMMARIZATION_MODEL_CHOICE:
-        # logger.debug("OpenAI client not available or SUMMARIZATION_MODEL_CHOICE not set. Skipping contextual summary.")
-        return text_chunk # Return original text if summarization is not configured
-
-    prompt = (
-        f"Given the following text chunk from {source_url} and the user query \"{query}\", "
-        f"provide a concise summary that helps determine if this chunk is relevant to the query. "
-        f"Focus on keywords and entities related to the query. If the chunk is very short or clearly irrelevant, "
-        f"you can indicate that. Text chunk:\n\n{text_chunk}"
-    )
-    try:
-        # Assuming openai client is already async or we run this in a thread
-        completion = await openai.chat.completions.create(
-            model=SUMMARIZATION_MODEL_CHOICE,
-            messages=[
-                {"role": "system", "content": "You are an expert at creating concise, query-focused summaries for RAG retrieval."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=150,
-            temperature=0.2
-        )
-        summary = completion.choices[0].message.content.strip()
-        # Combine summary with original text for better retrieval context
-        return f"Contextual Summary (Query: {query}): {summary}\n---\nOriginal Text: {text_chunk}"
-    except Exception as e:
-        logger.error(f"Error generating contextual summary with {SUMMARIZATION_MODEL_CHOICE}: {e}")
-        return text_chunk # Fallback to original text on error
 
 # Need to import asyncio if using asyncio.to_thread
 import asyncio 

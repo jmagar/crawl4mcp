@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import List, Optional
+import asyncio
 
 # Import RichHandler for pretty console logging
 from rich.logging import RichHandler
@@ -142,6 +143,14 @@ class LogAccessor:
     Intended to be instantiated and made available via LifespanContext.
     """
     def __init__(self, log_directory: str = "logs", default_log_filename: Optional[str] = None):
+        """
+        Initialize the LogAccessor.
+
+        Args:
+            log_directory: The directory where log files are stored. Defaults to "logs".
+            default_log_filename: The default log filename to use if LOG_FILENAME environment
+                                  variable is not set. Defaults to "crawl4mcp.log" if None.
+        """
         self.log_dir = Path(log_directory)
         # If LOG_FILENAME env var is set, it takes precedence.
         # Otherwise, use the default_log_filename passed during instantiation (e.g., from mcp_setup).
@@ -175,15 +184,21 @@ class LogAccessor:
             self.log_filename = current_log_filename
             self.log_file_path = self.log_dir / self.log_filename
 
+        # Check file existence asynchronously if possible, or keep sync if it's quick
+        # For this case, a quick sync check before threading is fine.
         if not self.log_file_path.exists() or not self.log_file_path.is_file():
             # Logger might not be fully set up or could be part of the issue, so direct print for critical path
             print(f"[LogAccessor.get_last_log_lines] Log file not found or is not a file: {self.log_file_path}", file=sys.stderr)
             return []
 
         try:
-            with open(self.log_file_path, 'r', encoding='utf-8') as f:
-                all_lines = f.readlines()
-                return all_lines[-num_lines:]
+            # Define a helper synchronous function for file operations
+            def _read_log_lines():
+                with open(self.log_file_path, 'r', encoding='utf-8') as f:
+                    all_lines = f.readlines()
+                    return all_lines[-num_lines:]
+            
+            return await asyncio.to_thread(_read_log_lines)
         except Exception as e:
             print(f"[LogAccessor.get_last_log_lines] Error reading log file {self.log_file_path}: {e}", file=sys.stderr)
             return []

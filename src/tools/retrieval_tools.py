@@ -26,7 +26,12 @@ from ..utils.logging_utils import get_logger
 # Initialize logger
 logger = get_logger(__name__)
 
-@mcp.tool()
+@mcp.tool(
+    annotations={
+        "title": "Perform RAG Query",
+        "readOnlyHint": True,
+    }
+)
 async def perform_rag_query(query: str, source: Optional[str] = None, match_count: int = 5, ctx: Optional[Context] = None) -> str:
     """
     Perform a RAG (Retrieval Augmented Generation) query on the stored content.
@@ -55,7 +60,7 @@ async def perform_rag_query(query: str, source: Optional[str] = None, match_coun
             if not collection_name_str:
                 error_msg = "QDRANT_COLLECTION environment variable must be set when context is not available"
                 logger.error(error_msg)
-                raise ToolError(message=error_msg, code="CONFIG_ERROR")
+                raise ToolError(error_msg, "CONFIG_ERROR")
         
         # Execute the query
         logger.debug(f"Executing RAG query against collection: {collection_name_str}")
@@ -64,9 +69,7 @@ async def perform_rag_query(query: str, source: Optional[str] = None, match_coun
             collection_name=collection_name_str,
             query_text=query,
             source_filter=source,
-            limit=match_count,
-            with_vectors=False,
-            with_payload=True
+            match_count=match_count
         )
 
         if not query_result:
@@ -100,12 +103,17 @@ async def perform_rag_query(query: str, source: Optional[str] = None, match_coun
     except Exception as e:
         logger.error(f"Error in perform_rag_query: {e}", exc_info=True)
         raise ToolError(
-            message=f"Error in RAG query: {str(e)}",
-            code="RAG_QUERY_ERROR",
-            details={"query": query, "source": source, "original_exception": str(e)}
+            f"Error in RAG query: {str(e)}",
+            "RAG_QUERY_ERROR",
+            {"query": query, "source": source, "original_exception": str(e)}
         )
 
-@mcp.tool()
+@mcp.tool(
+    annotations={
+        "title": "Perform Hybrid Search (Vector + Keyword)",
+        "readOnlyHint": True,
+    }
+)
 async def perform_hybrid_search(
     query: str, 
     filter_text: Optional[str] = None, 
@@ -135,14 +143,14 @@ async def perform_hybrid_search(
             if not collection_name_str:
                 raise ValueError("QDRANT_COLLECTION environment variable must be set.")
         except Exception as e_init:
-            raise ToolError(message=f"Failed to initialize Qdrant for hybrid search: {str(e_init)}", code="INITIALIZATION_ERROR", details={"original_exception": str(e_init)})
+            raise ToolError(f"Failed to initialize Qdrant for hybrid search: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
 
     if not all([qdrant_client_instance, collection_name_str]):
-        raise ToolError(message="Qdrant client or collection name missing for hybrid search.", code="MISSING_DEPENDENCY")
+        raise ToolError("Qdrant client or collection name missing for hybrid search.", "MISSING_DEPENDENCY")
 
     try:
         if not (0.0 <= vector_weight <= 1.0 and 0.0 <= keyword_weight <= 1.0):
-            raise ToolError(message="Hybrid search weights must be between 0.0 and 1.0", code="INVALID_PARAMS", details={"vector_weight": vector_weight, "keyword_weight": keyword_weight})
+            raise ToolError("Hybrid search weights must be between 0.0 and 1.0", "INVALID_PARAMS", {"vector_weight": vector_weight, "keyword_weight": keyword_weight})
         
         results = await perform_hybrid_search_util(
             client=qdrant_client_instance,
@@ -161,9 +169,14 @@ async def perform_hybrid_search(
         }, indent=2)
     except Exception as e:
         logger.error(f"Error in perform_hybrid_search: {str(e)}", exc_info=True)
-        raise ToolError(message=f"Error in hybrid search: {str(e)}", code="HYBRID_SEARCH_ERROR", details={"query": query, "original_exception": str(e)})
+        raise ToolError(f"Error in hybrid search: {str(e)}", "HYBRID_SEARCH_ERROR", {"query": query, "original_exception": str(e)})
 
-@mcp.tool()
+@mcp.tool(
+    annotations={
+        "title": "Get Similar Items by ID",
+        "readOnlyHint": True,
+    }
+)
 async def get_similar_items(
     item_id: str,
     filter_source: Optional[str] = None,
@@ -190,10 +203,10 @@ async def get_similar_items(
             if not collection_name_str:
                 raise ValueError("QDRANT_COLLECTION environment variable must be set.")
         except Exception as e_init:
-            raise ToolError(message=f"Failed to initialize Qdrant for similar items search: {str(e_init)}", code="INITIALIZATION_ERROR", details={"original_exception": str(e_init)})
+            raise ToolError(f"Failed to initialize Qdrant for similar items search: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
 
     if not all([qdrant_client_instance, collection_name_str]):
-        raise ToolError(message="Qdrant client or collection name missing for similar items search.", code="MISSING_DEPENDENCY")
+        raise ToolError("Qdrant client or collection name missing for similar items search.", "MISSING_DEPENDENCY")
 
     try:
         filter_condition = {"source": filter_source} if filter_source and filter_source.strip() else None
@@ -208,9 +221,14 @@ async def get_similar_items(
         return json.dumps({"success": True, "item_id": item_id, "source_filter": filter_source, "results": results, "count": len(results)}, indent=2)
     except Exception as e:
         logger.error(f"Error in get_similar_items: {str(e)}", exc_info=True)
-        raise ToolError(message=f"Error finding similar items: {str(e)}", code="SIMILAR_ITEMS_ERROR", details={"item_id": item_id, "original_exception": str(e)})
+        raise ToolError(f"Error finding similar items: {str(e)}", "SIMILAR_ITEMS_ERROR", {"item_id": item_id, "original_exception": str(e)})
 
-@mcp.tool()
+@mcp.tool(
+    annotations={
+        "title": "Fetch Item by ID",
+        "readOnlyHint": True,
+    }
+)
 async def fetch_item_by_id(item_id: str, ctx: Optional[Context] = None) -> str:
     """
     Fetch a specific item by ID from a Qdrant collection.
@@ -232,10 +250,10 @@ async def fetch_item_by_id(item_id: str, ctx: Optional[Context] = None) -> str:
             if not collection_name_str:
                 raise ValueError("QDRANT_COLLECTION environment variable must be set.")
         except Exception as e_init:
-            raise ToolError(message=f"Failed to initialize Qdrant for fetch_item_by_id: {str(e_init)}", code="INITIALIZATION_ERROR", details={"original_exception": str(e_init)})
+            raise ToolError(f"Failed to initialize Qdrant for fetch_item_by_id: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
 
     if not all([qdrant_client_instance, collection_name_str]):
-        raise ToolError(message="Qdrant client or collection name missing for fetch_item_by_id.", code="MISSING_DEPENDENCY")
+        raise ToolError("Qdrant client or collection name missing for fetch_item_by_id.", "MISSING_DEPENDENCY")
 
     try:
         result = await fetch_item_by_id_util(
@@ -246,12 +264,19 @@ async def fetch_item_by_id(item_id: str, ctx: Optional[Context] = None) -> str:
         if result:
             return json.dumps({"success": True, "item_id": item_id, "item": result}, indent=2)
         else:
-            raise ToolError(message=f"Item with ID '{item_id}' not found.", code="NOT_FOUND")
+            raise ToolError(f"Item with ID '{item_id}' not found.", "NOT_FOUND", {"item_id": item_id})
     except Exception as e:
-        logger.error(f"Error in fetch_item_by_id: {str(e)}", exc_info=True)
-        raise ToolError(message=f"Error fetching item by ID: {str(e)}", code="FETCH_ERROR", details={"item_id": item_id, "original_exception": str(e)})
+        if isinstance(e, ToolError) and e.args and isinstance(e.args[0], str) and e.args[0] == f"Item with ID '{item_id}' not found.":
+             raise
+        logger.error(f"Error in fetch_item_by_id for item '{item_id}': {str(e)}", exc_info=True)
+        raise ToolError(f"Error fetching item {item_id}: {str(e)}", "FETCH_ITEM_ERROR", {"item_id": item_id, "original_exception": str(e)})
 
-@mcp.tool()
+@mcp.tool(
+    annotations={
+        "title": "Find Similar Content by Text",
+        "readOnlyHint": True,
+    }
+)
 async def find_similar_content(
     content_text: str,
     filter_source: Optional[str] = None,
@@ -278,10 +303,10 @@ async def find_similar_content(
             if not collection_name_str:
                 raise ValueError("QDRANT_COLLECTION environment variable must be set.")
         except Exception as e_init:
-            raise ToolError(message=f"Failed to initialize Qdrant for find_similar_content: {str(e_init)}", code="INITIALIZATION_ERROR", details={"original_exception": str(e_init)})
+            raise ToolError(f"Failed to initialize Qdrant for find_similar_content: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
 
     if not all([qdrant_client_instance, collection_name_str]):
-        raise ToolError(message="Qdrant client or collection name missing for find_similar_content.", code="MISSING_DEPENDENCY")
+        raise ToolError("Qdrant client or collection name missing for find_similar_content.", "MISSING_DEPENDENCY")
 
     try:
         filter_condition = {"source": filter_source} if filter_source and filter_source.strip() else None
@@ -296,6 +321,6 @@ async def find_similar_content(
         return json.dumps({"success": True, "text_length": len(content_text), "source_filter": filter_source, "results": results, "count": len(results)}, indent=2)
     except Exception as e:
         logger.error(f"Error in find_similar_content: {str(e)}", exc_info=True)
-        raise ToolError(message=f"Error finding similar content: {str(e)}", code="SIMILAR_CONTENT_ERROR", details={"original_exception": str(e)})
+        raise ToolError(f"Error finding similar content: {str(e)}", "SIMILAR_CONTENT_ERROR", {"content_text_snippet": content_text[:100], "original_exception": str(e)})
 
 # Ensure the file ends with a newline for linters 

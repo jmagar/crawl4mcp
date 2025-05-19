@@ -109,7 +109,12 @@ async def _process_and_store_single_repo_file(
 
     return file_summary
 
-@mcp.tool()
+@mcp.tool(
+    annotations={
+        "title": "Crawl Single Web Page",
+        "readOnlyHint": False,
+    }
+)
 async def crawl_single_page(url: str, ctx: Optional[Context] = None) -> str:
     """
     Crawl a single web page and store its content in Qdrant.
@@ -303,7 +308,12 @@ async def crawl_single_page(url: str, ctx: Optional[Context] = None) -> str:
     # Return formatted result as JSON string
     return json.dumps(result, indent=2)
 
-@mcp.tool()
+@mcp.tool(
+    annotations={
+        "title": "Crawl Git Repository",
+        "readOnlyHint": False,
+    }
+)
 async def crawl_repo(
     repo_url: str,
     branch: Optional[str] = None,
@@ -520,13 +530,18 @@ async def crawl_repo(
                 "files_with_processing_errors": files_with_processing_errors_list
             }
             ctx.log.info(f"Repository crawl for {repo_url} complete.")
-            return json.dumps(summary, indent=2)
+            return json.dumps(summary, indent=4)
     except Exception as e:
         # Changed error handling
         logger.error(f"An unexpected error occurred in crawl_repo: {str(e)}", exc_info=True)
         raise ToolError(f"An unexpected error occurred in crawl_repo: {str(e)}", "REPO_CRAWL_UNEXPECTED_ERROR", {"repo_url": repo_url, "original_exception": str(e)})
 
-@mcp.tool()
+@mcp.tool(
+    annotations={
+        "title": "Smart Crawl URL (Webpage, Sitemap, Feed, etc.)",
+        "readOnlyHint": False,
+    }
+)
 async def smart_crawl_url(url: str, max_depth: int = 3, max_concurrent: int = 30, chunk_size: Optional[int] = None, ctx: Optional[Context] = None) -> str:
     """
     Intelligently crawl a URL based on its type and store content in Qdrant.
