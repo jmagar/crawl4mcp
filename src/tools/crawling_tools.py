@@ -320,7 +320,6 @@ async def crawl_repo(
     chunk_size: Optional[int] = None,      # User can override
     chunk_overlap: Optional[int] = None,   # User can override
     ignore_dirs: Optional[List[str]] = None, # New: Directories/patterns to ignore
-    allowed_extensions: Optional[List[str]] = None, # New: Specific file extensions to process
     ctx: Optional[Context] = None
 ) -> str:
     """
@@ -332,8 +331,6 @@ async def crawl_repo(
         chunk_size: Size of each text chunk in characters for processing. Defaults to CHUNK_SIZE from crawling_utils.
         chunk_overlap: Overlap between text chunks in characters. Defaults to CHUNK_OVERLAP from crawling_utils.
         ignore_dirs: Optional list of directory names or path patterns to ignore (e.g., [".git", "node_modules", "dist/"]).
-        allowed_extensions: Optional list of file extensions to process (e.g., [".py", ".js", ".md"]).
-                          If None or empty, all files not in ignored_dirs will be considered (after extension check).
         ctx: The MCP server provided context (optional).
 
     Returns:
@@ -368,12 +365,6 @@ async def crawl_repo(
     # Default ignored directories/patterns if none provided
     default_ignore_dirs = [".git", "node_modules", "__pycache__", ".venv", "venv", "env", "dist", "build", "target", ".DS_Store"]
     final_ignore_dirs = ignore_dirs if ignore_dirs is not None else default_ignore_dirs
-    
-    # Normalize allowed extensions (e.g., ensure they start with a dot)
-    final_allowed_extensions = []
-    if allowed_extensions:
-        for ext in allowed_extensions:
-            final_allowed_extensions.append(ext if ext.startswith('.') else '.' + ext)
 
     qdrant_client_instance = None
     collection_name_str = None
@@ -445,11 +436,6 @@ async def crawl_repo(
                                 break
                         if skip_due_to_ignore:
                             continue
-
-                        # Check allowed extensions (if any are specified)
-                        if final_allowed_extensions: # Only apply extension filter if list is not empty
-                            if fp_obj.suffix.lower() not in final_allowed_extensions:
-                                continue
                         
                         all_file_paths_to_process.append(fp_obj)
                     except Exception as path_err:
