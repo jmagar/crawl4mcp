@@ -6,7 +6,6 @@ from typing import Optional
 import os
 import logging
 
-from mcp.server.fastmcp import Context # MCP Context for tool arguments
 from mcp.server.fastmcp.exceptions import ToolError # Correct import path
 
 # Import the centralized mcp instance
@@ -26,41 +25,25 @@ from ..utils.logging_utils import get_logger
 # Initialize logger
 logger = get_logger(__name__)
 
-@mcp.tool(
-    annotations={
-        "title": "Perform RAG Query",
-        "readOnlyHint": True,
-    }
-)
-async def perform_rag_query(query: str, source: Optional[str] = None, match_count: int = 5, ctx: Optional[Context] = None) -> str:
+@mcp.tool()
+async def perform_rag_query(query: str, source: Optional[str] = None, match_count: int = 5) -> str:
     """
     Perform a RAG (Retrieval Augmented Generation) query on the stored content.
     Args:
         query: The search query.
         source: Optional source domain to filter results (e.g., 'example.com').
         match_count: Maximum number of results to return (default: 5).
-        ctx: Optional context object
     """
     logger.info(f"RAG query: '{query}' (source filter: {source}, match count: {match_count})")
     
     try:
-        # Try to get qdrant_client and collection_name from context
-        qdrant_client_instance = None
-        collection_name_str = None
-        
-        if hasattr(ctx, 'request_context') and ctx.request_context is not None:
-            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
-            collection_name_str = ctx.request_context.lifespan_context.collection_name
-            logger.debug("Using Qdrant client and collection from request context")
-        else:
-            # Fallback to environment variables
-            logger.warning("Context not available, initializing Qdrant client from environment variables")
-            qdrant_client_instance = get_qdrant_client()
-            collection_name_str = os.getenv("QDRANT_COLLECTION")
-            if not collection_name_str:
-                error_msg = "QDRANT_COLLECTION environment variable must be set when context is not available"
-                logger.error(error_msg)
-                raise ToolError(error_msg, "CONFIG_ERROR")
+        # Initialize components from environment
+        qdrant_client_instance = get_qdrant_client()
+        collection_name_str = os.getenv("QDRANT_COLLECTION")
+        if not collection_name_str:
+            error_msg = "QDRANT_COLLECTION environment variable must be set"
+            logger.error(error_msg)
+            raise ToolError(error_msg, "CONFIG_ERROR")
         
         # Execute the query
         logger.debug(f"Executing RAG query against collection: {collection_name_str}")
@@ -108,47 +91,25 @@ async def perform_rag_query(query: str, source: Optional[str] = None, match_coun
             {"query": query, "source": source, "original_exception": str(e)}
         )
 
-@mcp.tool(
-    annotations={
-        "title": "Perform Hybrid Search (Vector + Keyword)",
-        "readOnlyHint": True,
-    }
-)
+@mcp.tool()
 async def perform_hybrid_search(
     query: str, 
     filter_text: Optional[str] = None, 
     vector_weight: float = 0.7, 
     keyword_weight: float = 0.3, 
     source: Optional[str] = None, 
-    match_count: int = 5,
-    ctx: Optional[Context] = None
+    match_count: int = 5
 ) -> str:
     """
     Perform a hybrid search combining vector similarity with keyword/text-based filtering.
     """
-    qdrant_client_instance = None
-    collection_name_str = None
-
     try:
-        if hasattr(ctx, 'request_context') and ctx.request_context is not None:
-            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
-            collection_name_str = ctx.request_context.lifespan_context.collection_name
-        else:
-            raise AttributeError("request_context not available for perform_hybrid_search")
-    except (AttributeError, ValueError) as e:
-        logger.warning(f"Context access failed for perform_hybrid_search ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
-        try:
-            qdrant_client_instance = get_qdrant_client()
-            collection_name_str = os.getenv("QDRANT_COLLECTION")
-            if not collection_name_str:
-                raise ValueError("QDRANT_COLLECTION environment variable must be set.")
-        except Exception as e_init:
-            raise ToolError(f"Failed to initialize Qdrant for hybrid search: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
+        # Initialize components from environment
+        qdrant_client_instance = get_qdrant_client()
+        collection_name_str = os.getenv("QDRANT_COLLECTION")
+        if not collection_name_str:
+            raise ValueError("QDRANT_COLLECTION environment variable must be set.")
 
-    if not all([qdrant_client_instance, collection_name_str]):
-        raise ToolError("Qdrant client or collection name missing for hybrid search.", "MISSING_DEPENDENCY")
-
-    try:
         if not (0.0 <= vector_weight <= 1.0 and 0.0 <= keyword_weight <= 1.0):
             raise ToolError("Hybrid search weights must be between 0.0 and 1.0", "INVALID_PARAMS", {"vector_weight": vector_weight, "keyword_weight": keyword_weight})
         
@@ -171,44 +132,22 @@ async def perform_hybrid_search(
         logger.error(f"Error in perform_hybrid_search: {str(e)}", exc_info=True)
         raise ToolError(f"Error in hybrid search: {str(e)}", "HYBRID_SEARCH_ERROR", {"query": query, "original_exception": str(e)})
 
-@mcp.tool(
-    annotations={
-        "title": "Get Similar Items by ID",
-        "readOnlyHint": True,
-    }
-)
+@mcp.tool()
 async def get_similar_items(
     item_id: str,
     filter_source: Optional[str] = None,
-    match_count: int = 5,
-    ctx: Optional[Context] = None
+    match_count: int = 5
 ) -> str:
     """
     Find similar items based on vector similarity using Qdrant's recommendation API.
     """
-    qdrant_client_instance = None
-    collection_name_str = None
-
     try:
-        if hasattr(ctx, 'request_context') and ctx.request_context is not None:
-            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
-            collection_name_str = ctx.request_context.lifespan_context.collection_name
-        else:
-            raise AttributeError("request_context not available for get_similar_items")
-    except (AttributeError, ValueError) as e:
-        logger.warning(f"Context access failed for get_similar_items ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
-        try:
-            qdrant_client_instance = get_qdrant_client()
-            collection_name_str = os.getenv("QDRANT_COLLECTION")
-            if not collection_name_str:
-                raise ValueError("QDRANT_COLLECTION environment variable must be set.")
-        except Exception as e_init:
-            raise ToolError(f"Failed to initialize Qdrant for similar items search: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
+        # Initialize components from environment
+        qdrant_client_instance = get_qdrant_client()
+        collection_name_str = os.getenv("QDRANT_COLLECTION")
+        if not collection_name_str:
+            raise ValueError("QDRANT_COLLECTION environment variable must be set.")
 
-    if not all([qdrant_client_instance, collection_name_str]):
-        raise ToolError("Qdrant client or collection name missing for similar items search.", "MISSING_DEPENDENCY")
-
-    try:
         filter_condition = {"source": filter_source} if filter_source and filter_source.strip() else None
         
         results = await get_similar_items_util(
@@ -223,39 +162,18 @@ async def get_similar_items(
         logger.error(f"Error in get_similar_items: {str(e)}", exc_info=True)
         raise ToolError(f"Error finding similar items: {str(e)}", "SIMILAR_ITEMS_ERROR", {"item_id": item_id, "original_exception": str(e)})
 
-@mcp.tool(
-    annotations={
-        "title": "Fetch Item by ID",
-        "readOnlyHint": True,
-    }
-)
-async def fetch_item_by_id(item_id: str, ctx: Optional[Context] = None) -> str:
+@mcp.tool()
+async def fetch_item_by_id(item_id: str) -> str:
     """
     Fetch a specific item by ID from a Qdrant collection.
     """
-    qdrant_client_instance = None
-    collection_name_str = None
-
     try:
-        if hasattr(ctx, 'request_context') and ctx.request_context is not None:
-            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
-            collection_name_str = ctx.request_context.lifespan_context.collection_name
-        else:
-            raise AttributeError("request_context not available for fetch_item_by_id")
-    except (AttributeError, ValueError) as e:
-        logger.warning(f"Context access failed for fetch_item_by_id ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
-        try:
-            qdrant_client_instance = get_qdrant_client()
-            collection_name_str = os.getenv("QDRANT_COLLECTION")
-            if not collection_name_str:
-                raise ValueError("QDRANT_COLLECTION environment variable must be set.")
-        except Exception as e_init:
-            raise ToolError(f"Failed to initialize Qdrant for fetch_item_by_id: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
+        # Initialize components from environment
+        qdrant_client_instance = get_qdrant_client()
+        collection_name_str = os.getenv("QDRANT_COLLECTION")
+        if not collection_name_str:
+            raise ValueError("QDRANT_COLLECTION environment variable must be set.")
 
-    if not all([qdrant_client_instance, collection_name_str]):
-        raise ToolError("Qdrant client or collection name missing for fetch_item_by_id.", "MISSING_DEPENDENCY")
-
-    try:
         result = await fetch_item_by_id_util(
             client=qdrant_client_instance,
             collection_name=collection_name_str,
@@ -271,44 +189,22 @@ async def fetch_item_by_id(item_id: str, ctx: Optional[Context] = None) -> str:
         logger.error(f"Error in fetch_item_by_id for item '{item_id}': {str(e)}", exc_info=True)
         raise ToolError(f"Error fetching item {item_id}: {str(e)}", "FETCH_ITEM_ERROR", {"item_id": item_id, "original_exception": str(e)})
 
-@mcp.tool(
-    annotations={
-        "title": "Find Similar Content by Text",
-        "readOnlyHint": True,
-    }
-)
+@mcp.tool()
 async def find_similar_content(
     content_text: str,
     filter_source: Optional[str] = None,
-    match_count: int = 5,
-    ctx: Optional[Context] = None
+    match_count: int = 5
 ) -> str:
     """
     Find similar content based on text, not an existing item ID.
     """
-    qdrant_client_instance = None
-    collection_name_str = None
-
     try:
-        if hasattr(ctx, 'request_context') and ctx.request_context is not None:
-            qdrant_client_instance = ctx.request_context.lifespan_context.qdrant_client
-            collection_name_str = ctx.request_context.lifespan_context.collection_name
-        else:
-            raise AttributeError("request_context not available for find_similar_content")
-    except (AttributeError, ValueError) as e:
-        logger.warning(f"Context access failed for find_similar_content ({type(e).__name__}: {e}). Initializing Qdrant from environment.")
-        try:
-            qdrant_client_instance = get_qdrant_client()
-            collection_name_str = os.getenv("QDRANT_COLLECTION")
-            if not collection_name_str:
-                raise ValueError("QDRANT_COLLECTION environment variable must be set.")
-        except Exception as e_init:
-            raise ToolError(f"Failed to initialize Qdrant for find_similar_content: {str(e_init)}", "INITIALIZATION_ERROR", {"original_exception": str(e_init)})
+        # Initialize components from environment
+        qdrant_client_instance = get_qdrant_client()
+        collection_name_str = os.getenv("QDRANT_COLLECTION")
+        if not collection_name_str:
+            raise ValueError("QDRANT_COLLECTION environment variable must be set.")
 
-    if not all([qdrant_client_instance, collection_name_str]):
-        raise ToolError("Qdrant client or collection name missing for find_similar_content.", "MISSING_DEPENDENCY")
-
-    try:
         filter_condition = {"source": filter_source} if filter_source and filter_source.strip() else None
         
         results = await find_similar_content_util(

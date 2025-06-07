@@ -111,7 +111,7 @@ To stop the service:
 docker compose down
 ```
 
-### 4. (Alternative) Local Python Environment Setup for MCP Server 💻
+### 3. (Alternative) Local Python Environment Setup for MCP Server 💻
 
 Briefly:
 ```bash
@@ -119,9 +119,10 @@ uv venv
 source .venv/bin/activate
 uv pip install -e ".[visualization]"
 crawl4ai-setup
+# Start the server (ensure .env is configured)
 python -m src.app
 ```
-Ensure your `.env` correctly points to TEI and Qdrant if running them externally.
+Ensure your `.env` correctly points to your TEI and Qdrant instances if you are running them externally (i.e., not using the example `docker-compose.yml` which includes them).
 
 ## 🛠️ MCP Tools Provided
 
@@ -140,7 +141,14 @@ Once the server is running, it exposes these tools (prefixes removed):
     *   `chunk_size: Optional[int]` (default: `CHUNK_SIZE` from env, typically 500) - Size of each text chunk for processing repository files.
     *   `chunk_overlap: Optional[int]` (default: `CHUNK_OVERLAP` from env, typically 100 for repo files) - Overlap between text chunks for repository files.
     *   `ignore_dirs: Optional[List[str]]` (default: `[".git", "node_modules", "__pycache__", ...])` - List of directory names or path patterns to ignore.
-    *   `allowed_extensions: Optional[List[str]]` (default: None, processes most common text/code files) - Specific file extensions to process (e.g., `[".py", ".js"]`). If None, a broad set of text-based files are considered.
+    *   `allowed_extensions: Optional[List[str]]` (default: None, processes most common text/code files) - Specific file extensions to process (e.g., `[*.py*, *.js*]`). If None, a broad set of text-based files are considered.
+*   `crawl_dir(dir_path: str, chunk_size: Optional[int] = None, chunk_overlap: Optional[int] = None, ignore_patterns: Optional[List[str]] = None, allowed_extensions: Optional[List[str]] = None)`
+    *   **Important:** When running the MCP server in Docker, the `dir_path` must be a path accessible *inside the container*. You need to mount the host directory you wish to crawl as a volume into the container in your `docker-compose.yml` file. For example, map host `./my_docs` to container `/crawl_target` and then use `/crawl_target` as the `dir_path`.
+    *   `dir_path: str` - Absolute path to the local directory to crawl.
+    *   `chunk_size: Optional[int]` - Size of each text chunk. Defaults to server config.
+    *   `chunk_overlap: Optional[int]` - Overlap between chunks. Defaults to server config.
+    *   `ignore_patterns: Optional[List[str]]` - Glob patterns to ignore. Defaults to a predefined list (e.g., `node_modules`, `*.log`).
+    *   `allowed_extensions: Optional[List[str]]` - File extensions to process. Defaults to a predefined list.
 *   `perform_rag_query(query: str, source: Optional[str] = None, match_count: int = 5)`
     *   `query: str` - The natural language query for semantic search.
     *   `source: Optional[str]` (default: None) - Optional source domain to filter results (e.g., 'example.com').
@@ -180,12 +188,33 @@ Once the server is running, it exposes these tools (prefixes removed):
 
 ## 🧑‍💻 Development
 
-Uses `uv` for environment and package management.
+This project uses `uv` for Python environment and package management.
 
-```bash
-# Install dependencies, including optional ones
-uv pip install -e ".[visualization]"
-```
+To set up a local development environment for the MCP server:
+1. Ensure you have Python 3.12+ and `uv` installed.
+2. Create and activate a virtual environment:
+   ```bash
+   uv venv
+   source .venv/bin/activate
+   ```
+3. Install dependencies (including optional visualization tools):
+   ```bash
+   uv pip install -e ".[visualization]"
+   ```
+4. If you haven't already, run the Crawl4AI setup for necessary resources:
+   ```bash
+   crawl4ai-setup
+   ```
+5. Configure your `.env` file as described in the Setup section, ensuring `EMBEDDING_SERVER_URL` and `QDRANT_URL` are correctly set if you're running these services externally.
+6. Run the development server:
+   ```bash
+   python -m src.app
+   ```
+   Alternatively, you can use the `start-dev.sh` script which handles this (after you've set up the environment and `.env` file):
+   ```bash
+   ./start-dev.sh
+   ```
+   This script will start the MCP server. Changes in the `./src` directory will trigger a live reload if you are running via `docker compose up` with the provided `docker-compose.yml`.
 
 ## 🙌 Contributing
 

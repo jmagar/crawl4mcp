@@ -5,7 +5,8 @@ __pycache__/
 
 ANALYSIS.md
 SUGGESTIONS.md
-
+frontend
+logs
 # Distribution / packaging
 .Python
 build/
@@ -114,6 +115,7 @@ cline_docs
 .mypy_cache/
 .dmypy.json
 dmypy.json
+.pnpm-store/
 
 # Pyre type checker
 .pyre/

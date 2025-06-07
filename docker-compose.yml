@@ -39,6 +39,8 @@ services:
     environment:
       - HOST=${HOST:-0.0.0.0}
       - PORT=${PORT:-8051}
+      # FastMCP Transport Configuration
+      - FASTMCP_TRANSPORT=${FASTMCP_TRANSPORT:-sse}
       # Self-Hosted Embedding Server (Required)
       - EMBEDDING_SERVER_URL=${EMBEDDING_SERVER_URL:-http://crawl4mcp-embeddings:8080}
       # Qdrant Configuration (Required)
@@ -49,6 +51,7 @@ services:
 
     volumes:
       - .:/app # Mounts the current directory (containing src, etc.) to /app in the container
+      - /mnt/cache/docs:/data_to_crawl:ro # Map host's /mnt/cache/docs to /data_to_crawl in container (read-only)
     develop:
       watch:
         - action: rebuild

@@ -93,21 +93,35 @@ except Exception as e:
     logger.error(f"Error retrieving registered tools: {e}", exc_info=True)
 
 # Export the mcp FastMCP instance as "app" for ASGI servers like uvicorn
-app = mcp.http_app()
+# NOTE: For SSE transport, we'll use mcp.run() directly instead of http_app()
+app = mcp.http_app()  # Keep this for compatibility, but SSE will use run() method
 
 # If running directly, start the server (for development only)
 if __name__ == "__main__":
-    import uvicorn
-    
     # Get configuration from environment variables
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", 9130))
     
-    logger.info(f"Starting development server on {host}:{port}")
-    uvicorn.run(
-        "src.app:app",
-        host=host,
-        port=port,
-        reload=True,
-        log_level=os.getenv("LOG_LEVEL", "info").lower()
-    ) 
+    # Check if SSE transport is requested via environment variable
+    transport_mode = os.getenv("FASTMCP_TRANSPORT", "http").lower()
+    
+    if transport_mode == "sse":
+        logger.info(f"Starting FastMCP server with SSE transport on {host}:{port}")
+        # Use FastMCP's built-in SSE transport
+        mcp.run(
+            transport="sse",
+            host=host,
+            port=port,
+            log_level=os.getenv("LOG_LEVEL", "info").lower()
+        )
+    else:
+        # Default to uvicorn with http_app for regular HTTP
+        import uvicorn
+        logger.info(f"Starting development server with HTTP transport on {host}:{port}")
+        uvicorn.run(
+            "src.app:app",
+            host=host,
+            port=port,
+            reload=True,
+            log_level=os.getenv("LOG_LEVEL", "info").lower()
+        ) 
