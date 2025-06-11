@@ -10,31 +10,32 @@ from qdrant_client.http.exceptions import ResponseHandlingException
 
 # Import logging utilities
 from ..logging_utils import get_logger # Adjusted import path
+from typing import Optional
 
 # Initialize logger
 logger = get_logger(__name__)
 
-def get_qdrant_client() -> QdrantClient:
+def get_qdrant_client(qdrant_url: Optional[str] = None, api_key: Optional[str] = None) -> QdrantClient:
     """
     Get a Qdrant client with the URL and API key from environment variables.
     
     Returns:
         Qdrant client instance
     """
-    url = os.getenv("QDRANT_URL")
-    api_key = os.getenv("QDRANT_API_KEY")
+    url_to_use = qdrant_url if qdrant_url is not None else os.getenv("QDRANT_URL")
+    api_key_to_use = api_key if api_key is not None else os.getenv("QDRANT_API_KEY")
     
-    if not url:
-        logger.error("QDRANT_URL must be set in the environment variables.")
-        raise ValueError("QDRANT_URL must be set in the environment variables.")
+    if not url_to_use:
+        logger.error("QDRANT_URL must be provided either as a parameter or set in the environment variables.")
+        raise ValueError("QDRANT_URL must be provided either as a parameter or set in the environment variables.")
     
     # Create client with or without API key, depending on what's provided
-    if api_key:
-        logger.debug(f"Creating Qdrant client with URL {url} and API key")
-        return QdrantClient(url=url, api_key=api_key)
+    if api_key_to_use:
+        logger.debug(f"Creating Qdrant client with URL {url_to_use} and API key")
+        return QdrantClient(url=url_to_use, api_key=api_key_to_use)
     else:
-        logger.debug(f"Creating Qdrant client with URL {url} (no API key)")
-        return QdrantClient(url=url)
+        logger.debug(f"Creating Qdrant client with URL {url_to_use} (no API key)")
+        return QdrantClient(url=url_to_use)
 
 async def ensure_qdrant_collection_async(client: QdrantClient, collection_name: str, vector_dim: int):
     """

@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 import os
 import fnmatch
+import uuid
+import hashlib
 
 from mcp.server.fastmcp.exceptions import ToolError # Correct import path
 
@@ -34,6 +36,8 @@ from ..utils.crawling_utils import (
 )
 # Import logging utilities
 from ..utils.logging_utils import get_logger
+from ..config import settings
+from ..utils.text_processing import extract_code_blocks
 
 # Default ignore patterns for local directory crawling (glob-style)
 DEFAULT_LOCAL_IGNORE_PATTERNS = [
@@ -90,7 +94,8 @@ async def _process_and_store_single_repo_file(
         "error": None,
         "content_read": False # New flag
     }
-    chunks_data_for_qdrant_list: List[Dict[str, str]] = [] # Ensure it's defined for the error case
+    chunks_data_for_qdrant_list: List[Dict[str, Any]] = [] # Ensure it's defined for the error case
+    code_chunks_data_for_qdrant_list: List[Dict[str, Any]] = []
 
     try:
         logger.debug(f"Reading file: {relative_path}")
@@ -100,7 +105,47 @@ async def _process_and_store_single_repo_file(
             logger.debug(f"File is empty: {relative_path}")
             return file_summary
 
-        logger.debug(f"Chunking file content: {relative_path}")
+        # Agentic RAG: Extract and prepare code blocks if enabled
+        if settings.USE_AGENTIC_RAG:
+            logger.debug(f"Agentic RAG enabled. Extracting code blocks from repo file: {relative_path}")
+            extracted_codes = extract_code_blocks(content, settings.CODE_BLOCK_MIN_LENGTH)
+            for i, code_block_info in enumerate(extracted_codes):
+                code_content = code_block_info['code']
+                code_lang = code_block_info.get('language', 'unknown')
+                code_block_hash = hashlib.md5(code_content.encode('utf-8')).hexdigest()
+                # Use repo_url and relative_path for a more globally unique ID namespace
+                code_block_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{repo_url}::{str(relative_path)}::{code_block_hash}"))
+                
+                code_chunks_data_for_qdrant_list.append({
+                    "id": code_block_id,
+                    "text": code_content,
+                    "headers": f"Code Block from: {repo_url} (file: {str(relative_path)}) - Language: {code_lang}",
+                    "payload_override": {
+                        "source": f"{repo_url} (file: {str(relative_path)} - code_block)",
+                        "crawl_type": "code_example",
+                        "language": code_lang,
+                        "original_file_path": str(relative_path),
+                        "repo_url": repo_url,
+                        "code_hash": code_block_hash
+                    }
+                })
+            logger.info(f"Extracted {len(code_chunks_data_for_qdrant_list)} code blocks from {relative_path} for Agentic RAG.")
+
+        # Store extracted code blocks if any
+        if code_chunks_data_for_qdrant_list:
+            logger.debug(f"Storing {len(code_chunks_data_for_qdrant_list)} code blocks for repo file: {relative_path}")
+            successful_code, failed_code = await store_embeddings(
+                client=qdrant_client_instance,
+                collection_name=collection_name_str,
+                chunks=code_chunks_data_for_qdrant_list,
+                source_url=f"{repo_url} (file: {str(relative_path)} - code_blocks)",
+                crawl_type="code_example_batch"
+            )
+            file_summary["successful_chunks"] += successful_code
+            file_summary["failed_chunks"] += failed_code
+            logger.debug(f"Stored code_example embeddings for repo file {relative_path}: {successful_code} successful, {failed_code} failed")
+
+        logger.debug(f"Chunking general file content: {relative_path}") # Renamed log message for clarity
         current_file_chunks_text = simple_text_chunker(
             content,
             chunk_size=effective_chunk_size,
@@ -114,8 +159,9 @@ async def _process_and_store_single_repo_file(
             meta_info = f"File: {str(relative_path)} - Chunk: {i+1}/{len(current_file_chunks_text)}"
             chunks_data_for_qdrant_list.append({"text": chunk_content_item, "headers": meta_info})
         
-        if chunks_data_for_qdrant_list:
-            logger.debug(f"Storing {len(chunks_data_for_qdrant_list)} chunks for file: {relative_path}")
+        # Process and store general file content (original logic)
+        if chunks_data_for_qdrant_list: # This list should now ONLY contain general content chunks
+            logger.debug(f"Storing {len(chunks_data_for_qdrant_list)} general content chunks for repo file: {relative_path}")
             successful, failed = await store_embeddings(
                 client=qdrant_client_instance,
                 collection_name=collection_name_str,
@@ -158,7 +204,8 @@ async def _process_and_store_single_local_file(
         "error": None,
         "content_read": False
     }
-    chunks_data_for_qdrant_list: List[Dict[str, str]] = []
+    chunks_data_for_qdrant_list: List[Dict[str, Any]] = []
+    code_chunks_data_for_qdrant_list: List[Dict[str, Any]] = []
 
     try:
         logger.debug(f"Reading local file: {relative_path}")
@@ -168,6 +215,48 @@ async def _process_and_store_single_local_file(
             logger.debug(f"Local file is empty: {relative_path}")
             return file_summary
 
+        # Agentic RAG: Extract and prepare code blocks if enabled
+        if settings.USE_AGENTIC_RAG:
+            logger.debug(f"Agentic RAG enabled. Extracting code blocks from: {relative_path}")
+            extracted_codes = extract_code_blocks(content, settings.CODE_BLOCK_MIN_LENGTH)
+            for i, code_block_info in enumerate(extracted_codes):
+                code_content = code_block_info['code']
+                code_lang = code_block_info.get('language', 'unknown')
+                # Generate a stable ID for the code block
+                code_block_hash = hashlib.md5(code_content.encode('utf-8')).hexdigest()
+                code_block_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{str(relative_path)}::{code_block_hash}"))
+                
+                # For code blocks, the 'text' is the code itself.
+                # Metadata includes language and original file path.
+                code_chunks_data_for_qdrant_list.append({  # Corrected list name here
+                    "id": code_block_id,
+                    "text": code_content,
+                    "headers": f"Code Block from: {str(relative_path)} - Language: {code_lang}",
+                    "payload_override": { # This allows direct payload setting in store_embeddings
+                        "source": f"local_dir: {source_identifier} (file: {str(relative_path)} - code_block)",
+                        "crawl_type": "code_example",
+                        "language": code_lang,
+                        "original_file_path": str(relative_path),
+                        "code_hash": code_block_hash
+                    }
+                })
+            logger.info(f"Extracted {len(code_chunks_data_for_qdrant_list)} code blocks from {relative_path} for Agentic RAG.")
+
+        # Store extracted code blocks if any
+        if code_chunks_data_for_qdrant_list:
+            logger.debug(f"Storing {len(code_chunks_data_for_qdrant_list)} code blocks for local file: {relative_path}")
+            successful_code, failed_code = await store_embeddings(
+                client=qdrant_client_instance,
+                collection_name=collection_name_str,
+                chunks=code_chunks_data_for_qdrant_list,
+                source_url=f"local_dir: {source_identifier} (file: {str(relative_path)} - code_blocks)",
+                crawl_type="code_example_batch"
+            )
+            file_summary["successful_chunks"] += successful_code
+            file_summary["failed_chunks"] += failed_code
+            logger.debug(f"Stored code_example embeddings for local {relative_path}: {successful_code} successful, {failed_code} failed")
+
+        # Process and store general file content (original logic)
         current_file_chunks_text = simple_text_chunker(
             content,
             chunk_size=effective_chunk_size,
@@ -181,12 +270,13 @@ async def _process_and_store_single_local_file(
             meta_info = f"File: {str(relative_path)} - Chunk: {i+1}/{len(current_file_chunks_text)}"
             chunks_data_for_qdrant_list.append({"text": chunk_content_item, "headers": meta_info})
         
-        if chunks_data_for_qdrant_list:
+        # This is the existing block for general content, ensure it's correctly placed and uses the right list
+        if chunks_data_for_qdrant_list: # This list should now ONLY contain general content chunks
             successful, failed = await store_embeddings(
                 client=qdrant_client_instance,
                 collection_name=collection_name_str,
-                chunks=chunks_data_for_qdrant_list,
-                source_url=f"local_dir: {source_identifier} (file: {str(relative_path)})",
+                chunks=chunks_data_for_qdrant_list, # This should be the general content chunks
+                source_url=f"local_dir: {source_identifier} (file: {str(relative_path)})", # Source for general content
                 crawl_type="local_directory"
             )
             file_summary["successful_chunks"] = successful

@@ -36,18 +36,10 @@ services:
       dockerfile: Dockerfile
     ports:
       - ${PORT:-8051}:${PORT:-8051}
-    environment:
-      - HOST=${HOST:-0.0.0.0}
-      - PORT=${PORT:-8051}
-      # FastMCP Transport Configuration
-      - FASTMCP_TRANSPORT=${FASTMCP_TRANSPORT:-sse}
-      # Self-Hosted Embedding Server (Required)
-      - EMBEDDING_SERVER_URL=${EMBEDDING_SERVER_URL:-http://crawl4mcp-embeddings:8080}
-      # Qdrant Configuration (Required)
-      - QDRANT_URL=${QDRANT_URL:-http://crawl4mcp-qdrant:6333}
-      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
-      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-crawl4mcp}
-      - VECTOR_DIM=${VECTOR_DIM:-1024}
+    env_file:
+      - .env
+    networks:
+      - jakenet
 
     volumes:
       - .:/app # Mounts the current directory (containing src, etc.) to /app in the container
@@ -77,3 +69,7 @@ services:
 
     # networks:
     #   crawl4mcp-network:
+
+networks:
+  jakenet:
+    external: true

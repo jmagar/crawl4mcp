@@ -23,6 +23,7 @@ from .tools import crawling_tools
 from .tools import retrieval_tools
 from .tools import management_tools
 from .tools import analytics_tools
+from .tools import search_tools
 
 # Log that all modules have been imported and registered
 logger.info("MCP server fully initialized with all tool modules imported.")

@@ -77,7 +77,22 @@ async def store_embeddings(
 
         embedded_text_payload = texts_to_embed[i]
 
-        payload = {
+        # Check for payload_override
+        payload_override = chunk_data.get("payload_override")
+        if payload_override and isinstance(payload_override, dict):
+            payload = payload_override.copy() # Start with the override
+            # Ensure essential fields are present or add them
+            payload.setdefault("text", embedded_text_payload)
+            payload.setdefault("char_count", len(text_content))
+            payload.setdefault("word_count", len(text_content.split()))
+            payload.setdefault("chunk_index", i + 1) # Can be useful even for code blocks
+            payload.setdefault("crawl_timestamp", datetime.utcnow().isoformat())
+            # Ensure 'url' and 'source' are present if not in override, deriving from source_url
+            payload.setdefault("url", source_url)
+            payload.setdefault("source", urlparse(source_url).netloc)
+        else:
+            # Original payload construction
+            payload = {
             "url": source_url,
             "text": embedded_text_payload,
             "source": urlparse(source_url).netloc,
@@ -89,10 +104,18 @@ async def store_embeddings(
             "contextual_embedding": False, # As per current logic in qdrant_utils.py
             "crawl_timestamp": datetime.utcnow().isoformat()
         }
+        # Ensure common fields are present even if not overridden, for consistency
+        payload.setdefault("char_count", len(text_content))
+        payload.setdefault("word_count", len(text_content.split()))
+        payload.setdefault("chunk_index", i + 1)
+        payload.setdefault("crawl_timestamp", datetime.utcnow().isoformat())
+
+        # Use provided ID if available, else generate one
+        point_id = chunk_data.get("id", str(uuid.uuid4()))
 
         points_to_upsert.append(
             PointStruct(
-                id=str(uuid.uuid4()),
+                id=point_id,
                 vector=embedding,
                 payload=payload
             )
