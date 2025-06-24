@@ -1,0 +1,93 @@
+services:
+  # Optimized BGE-large embeddings server for RTX 4070 (12GB VRAM)
+  tei-dense:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.7
+    container_name: tei-dense-server
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./tei_cache_dense:/data
+      - /tmp:/tmp  # For Unix socket communication
+    environment:
+      # NVIDIA GPU Configuration (Docker runtime settings)
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      
+      # TEI Configuration via Environment Variables
+      - MODEL_ID=BAAI/bge-large-en-v1.5
+      - DTYPE=float16                      # Essential for RTX 4070 tensor cores
+      - POOLING=cls                        # BGE-large uses CLS pooling
+      - MAX_BATCH_TOKENS=131072            # OPTIMAL: Proven sweet spot for RTX 4070 (57ms latency)
+      - MAX_CONCURRENT_REQUESTS=64         # OPTIMAL: Balanced concurrency without queue bottlenecks
+      - MAX_CLIENT_BATCH_SIZE=256          # OPTIMAL: Efficient client-side batching
+      - MAX_BATCH_REQUESTS=48              # OPTIMAL: GPU batch processing sweet spot
+      - TOKENIZATION_WORKERS=24           # MAXED: Full CPU utilization (24 logical cores)
+      - PAYLOAD_LIMIT=40000000             # 40MB limit (increased from default 2MB)
+      - JSON_OUTPUT=true                  # Structured logging for monitoring
+      - HOSTNAME=0.0.0.0
+      - PORT=80
+    command: [
+      # Only specify essential command-line overrides
+      "--model-id", "BAAI/bge-large-en-v1.5"
+    ]
+    deploy:
+      resources:
+        limits:
+          # Reserve most system resources for optimal performance
+          memory: 24G                       # AGGRESSIVE: More memory for idle system
+        reservations:
+          memory: 8G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]             # Explicitly use GPU 0
+    
+    # Health check for monitoring
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    # Logging configuration for monitoring
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  crawl4mcp:
+    container_name: crawl4mcp
+    labels:
+      - com.centurylinklabs.watchtower.enable=false
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - ${PORT:-8051}:${PORT:-8051}
+    env_file:
+      - .env
+    environment:
+      # NVIDIA GPU Configuration for CrossEncoder
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - .:/app # Mounts the current directory (containing src, etc.) to /app in the container
+      - /mnt/cache/docs:/data_to_crawl:ro # Map host's /mnt/cache/docs to /data_to_crawl in container (read-only)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    develop:
+      watch:
+        - action: sync
+          path: ./src
+          target: /app/src
